@@ -52,7 +52,8 @@ end
     tu0 = only(hmc_tuning(warm, st0))
     @test tu0.metric == tu.metric
     @test tu0.step_size == tu.step_size
-    @test vec(mean(x; dims=1)) ≈ _WS_MEAN atol=0.05
+    # 4000 correlated draws, posterior sd 0.75: allow about 4 Monte Carlo SEs.
+    @test vec(mean(x; dims=1)) ≈ _WS_MEAN atol=0.12
     @test cov(x) ≈ _WS_COV atol=0.1
 
     # adapt = :step_size: the metric is kept, only the step size moves.
