@@ -41,6 +41,12 @@ passed at the `sample` call, and the warm-up draws stay in the chain unless you
 slice them off:
 
     chn = sample(model, AdaptiveHMC(0.8; n_leapfrog=16), 2000; n_adapts=1000)
+
+`adapt` says what the warm-up learns. `:full` (the default) learns the metric and
+the step size. `:step_size` keeps the metric it is given and tunes only the step
+size, which is what a run started from an earlier run's metric wants: the
+windowed metric estimate would otherwise start again from a handful of draws.
+See [`warm_start`](@ref).
 """
 struct AdaptiveHMC{T<:Real,I,M} <: AbstractHMCSampler
     "Target acceptance rate for step-size dual averaging."
@@ -53,13 +59,18 @@ struct AdaptiveHMC{T<:Real,I,M} <: AbstractHMCSampler
     integrator::I
     "Choice of initial metric (`Symbol` for auto-init, or an `AbstractMetric`)."
     metric::M
+    "What warm-up adapts: `:full` (metric and step size) or `:step_size`."
+    adapt::Symbol
 end
 
 function AdaptiveHMC(
-    δ=0.8; n_leapfrog::Int=10, jitter::Bool=false, integrator=:leapfrog, metric=:diagonal
+    δ=0.8; n_leapfrog::Int=10, jitter::Bool=false, integrator=:leapfrog, metric=:diagonal,
+    adapt::Symbol=:full,
 )
+    adapt in (:full, :step_size) ||
+        throw(ArgumentError("adapt must be :full or :step_size, got :$adapt"))
     T = AdvancedHMC.determine_sampler_eltype(δ, integrator, metric)
-    return AdaptiveHMC(T(δ), n_leapfrog, jitter, integrator, metric)
+    return AdaptiveHMC(T(δ), n_leapfrog, jitter, integrator, metric, adapt)
 end
 
 # Unlike `NUTSthenHMC`, this sampler needs no wrapper state and no `step` methods
@@ -92,5 +103,6 @@ end
 function AdvancedHMC.make_adaptor(
     spl::AdaptiveHMC, metric::AdvancedHMC.AbstractMetric, integrator::AdvancedHMC.AbstractIntegrator
 )
+    spl.adapt === :step_size && return StepSizeAdaptor(spl.δ, integrator)
     return StanHMCAdaptor(MassMatrixAdaptor(metric), StepSizeAdaptor(spl.δ, integrator))
 end

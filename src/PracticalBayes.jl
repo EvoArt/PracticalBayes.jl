@@ -41,6 +41,7 @@ include("check_depends.jl")
 include("jittered_nsteps.jl")
 include("nuts_to_hmc.jl")
 include("adaptive_hmc.jl")
+include("warm_start.jl")
 include("progress.jl")
 include("static_hmc.jl")
 include("static_hmc_api.jl")
@@ -61,7 +62,7 @@ export maximum_a_posteriori, maximum_likelihood, laplace_approximation
 export PointEstimate, LaplaceApproximation, laplace_mvnormal
 export AbstractLatentKernel, ModelConditional, latent_step
 export ConjugateGibbs
-export Gibbs, GibbsState
+export Gibbs, GibbsState, hmc_tuning, warm_start
 export check_depends, DependsReport
 export SaveToChain, SaveToBuffer, SaveToDisk, write_state_chunk!, read_states
 export SymChain
