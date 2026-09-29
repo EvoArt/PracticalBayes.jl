@@ -35,6 +35,8 @@ function _ws_run(spl, n; n_adapts, init=(; a=0.0, b=0.0), seed=1)
 end
 
 @testset "warm_start: tuning is read, carried and kept" begin
+    # One block holding every parameter of a GLM-shaped model: the case that
+    # takes the closed-form gradient inside Gibbs.
     spl = Gibbs((:a, :b) => AdaptiveHMC(0.8; n_leapfrog=8, metric=:dense))
     _, st = _ws_run(spl, 1500; n_adapts=1000)
     tu = only(hmc_tuning(spl, st))

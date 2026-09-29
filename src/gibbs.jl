@@ -193,7 +193,11 @@ function _init_block_sub(model::Model, block::GibbsBlock, values0::NamedTuple; a
     layout, θ0, _ = build_layout(model; flat=block.names, values=other_names, init=own_init)
     store0 = NamedTuple{other_names}(Tuple(values0[k] for k in other_names))
     ldf0 = LogDensityFunction(model, layout, store0, adtype; θ0=θ0)
-    return GibbsSamplerSub(layout, adtype, ldf0.prep, nothing)
+    # `ldf0.adtype`, not `adtype`: a block holding every parameter has an empty
+    # store, so a GLM-shaped model gets the closed-form gradient (GradMode) and
+    # its prep. Every sweep rebuilds the density from this pair, and the prep
+    # under the requested backend's type would send it down the AD path.
+    return GibbsSamplerSub(layout, ldf0.adtype, ldf0.prep, nothing)
 end
 
 # ===========================================================================
