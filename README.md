@@ -4,66 +4,54 @@
 [![Benchmark Sweep](https://github.com/EvoArt/PracticalBayes/actions/workflows/benchmark.yml/badge.svg)](https://github.com/EvoArt/PracticalBayes/actions/workflows/benchmark.yml)
 [![Docs](https://img.shields.io/badge/docs-stable-blue.svg)](https://EvoArt.github.io/PracticalBayes)
 
-PracticalBayes is a performance-oriented probabilistic programming package built to keep clean Turing-style modeling syntax while targeting fast inference paths from day one.
-
-## Why this package exists
-
-- Target **GPU-oriented workflows** and **latent-state samplers** from the start, not as an afterthought.
-- Keep model code clean and familiar (`@model`, `~`, `arraydist`, etc.) while still getting top performance.
-- Make high performance the default so users do not need to memorize optimizer/compiler tricks to get good results.
-- Stay compatible with modern AD tooling via **DifferentiationInterface** (ForwardDiff, Mooncake, Enzyme).
-- Include practical features for large models, including **untracked nuisance parameters** and **Float32-first paths**.
-
-## Relationship to Turing
-
-Turing is probably my favourite Julia package of all time.
-
-PracticalBayes is built almost entirely on the Turing ecosystem (AbstractPPL, DynamicPPL-adjacent patterns, AdvancedHMC, Bijectors, Distributions, LogDensityProblems, and related tooling). The goal is not to replace Turing's scope.
-
-PracticalBayes will likely never be as general as Turing, by design. It intentionally keeps a narrower focus so the core goals above remain first-class.
-
-## Example
+PracticalBayes is a probabilistic programming package for Julia. Models are
+written with Turing-style `@model` and `~` syntax and sampled with HMC/NUTS
+from AdvancedHMC, alone or as blocks of a Gibbs sampler.
 
 ```julia
-using PracticalBayes
-using ADTypes
-using Random
+using Pkg
+Pkg.add(url="https://github.com/EvoArt/PracticalBayes")
+```
 
-@model function demo_model(y)
-    μ ~ Normal(0, 1)
+```julia
+using PracticalBayes, Distributions
+
+@model function linreg(x, y)
+    α ~ Normal(0, 10)
+    β ~ Normal(0, 10)
     σ ~ Exponential(1)
-    y ~ arraydist(Normal.(μ, σ))
+    y .~ Normal.(α .+ β .* x, σ)
 end
 
-m = demo_model(randn(100))
-chain = sample(Random.default_rng(), m, NUTS(0.8), 1000; adtype=AutoForwardDiff())
+x = range(0, 1; length=50)
+y = 1 .+ 2 .* x .+ 0.3 .* randn(50)
+chn = sample(linreg(x, y), NUTS(0.8), 2000; n_adapts=1000)
+chn[:β]
 ```
 
 ## Features
 
-- Static layout + efficient constrained/unconstrained parameter transforms.
-- `LogDensityFunction` interface for direct integration with samplers/optimizers.
-- Nuisance-parameter support (`untracked`) for large latent models.
-- MAP/MLE/Laplace tools with optional Optimization.jl extension.
-- Float32 performance path for parameter-heavy models.
-- AD backend flexibility via DifferentiationInterface.
-- **Trimmable models**: compile a model to a standalone native binary with
-  `juliac --trim=safe` — a few MB, no Julia install needed at the target, and
-  milliseconds to start instead of JIT latency. This needs an AD backend whose
-  derivative code exists as ordinary compiled Julia, which rules out every
-  established package (they each build it at runtime, via a config, a thunk, an
-  interpreter, or `eval`). [Piste.jl](https://github.com/EvoArt/Piste.jl)
-  provides one: `import Piste` and pass `AutoPBForwardDiff()`. Forward mode, so
-  reverse mode still wins on parameter-heavy models — reach for it when you
-  want a binary. Requires Julia 1.12+; Piste is a weak dependency, so nothing
-  changes for anyone who is not trimming.
-- **`depends=` annotations for Gibbs**: `@addlogprob! expr depends=(:a, :b)`
-  tells the evaluator which variables a term actually involves, so a Gibbs block
-  owning none of them skips it entirely. Exact, not approximate — but only if
-  the annotation is right, and under-declaring fails SILENTLY (the block’s
-  gradient quietly loses a contribution). `check_depends` is the guard: it
-  compares each block’s gradient as written against the same gradient with
-  nothing skipped, so the hint is verified rather than trusted.
+- **Latent-variable samplers outside the gradient.** A `Gibbs` block can be
+  your own `AbstractLatentKernel`, next to NUTS and conjugate blocks. It runs
+  once per sweep and is never differentiated.
+- **Float32.** Models can run in Float32 end to end.
+- **Trimmable models.** A simple model can be compiled into a standalone binary
+  with `juliac --trim`.
+- **GPU data.** Data can live on a CUDA device. This is untested on GPU
+  hardware and a work in progress.
+- **Closed-form gradients** for models recognised as generalised linear models,
+  used automatically.
+
+See the [documentation](https://EvoArt.github.io/PracticalBayes) for a
+tutorial, how-to guides and the API reference.
+
+## Relationship to Turing
+
+PracticalBayes builds on parts of the Turing ecosystem (AbstractPPL,
+AdvancedHMC, Bijectors, Distributions, LogDensityProblems) but has its own
+evaluation core and does not use DynamicPPL or Turing. It covers a narrower
+range of models than Turing does. Most Turing models port with small changes;
+see [Port a model from Turing](https://EvoArt.github.io/PracticalBayes/howto/from_turing/).
 
 ## Benchmark summary (auto-updated)
 

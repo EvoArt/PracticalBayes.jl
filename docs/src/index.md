@@ -1,32 +1,52 @@
 # PracticalBayes.jl
 
-PracticalBayes is a performance-oriented probabilistic programming package with Turing-style model syntax and a strong focus on fast inference paths for large models.
+PracticalBayes is a probabilistic programming package for Julia. Models are
+written with Turing-style `@model` and `~` syntax and sampled with HMC/NUTS
+from AdvancedHMC, alone or as blocks of a Gibbs sampler. Results come back as
+FlexiChains `SymChain`s.
 
-## Core ideas
+```julia
+using PracticalBayes, Distributions
 
-- Keep model authoring ergonomic (`@model`, `~`, vectorized distributions).
-- Keep AD and sampler internals explicit and composable.
-- Support large-model workloads with features like untracked nuisance parameters and Float32 parameter paths.
-- Work with DifferentiationInterface-compatible backends, including ForwardDiff, Mooncake, and Enzyme.
-
-## Getting started
-
-```@example
-using PracticalBayes
-using ADTypes
-using LogDensityProblems
-using Distributions
-
-PracticalBayes.@model function demo(y)
-    μ ~ Normal(0, 1)
+@model function linreg(x, y)
+    α ~ Normal(0, 10)
+    β ~ Normal(0, 10)
     σ ~ Exponential(1)
-    y .~ Normal.(μ, σ)
+    y .~ Normal.(α .+ β .* x, σ)
 end
 
-m = demo(randn(20))
-layout, θ0, store0 = PracticalBayes.build_layout(m)
-ldf = PracticalBayes.LogDensityFunction(m, layout, store0, ADTypes.AutoForwardDiff(); θ0=θ0)
-LogDensityProblems.logdensity_and_gradient(ldf, θ0)
+chn = sample(linreg(x, y), NUTS(0.8), 2000; n_adapts=1000)
 ```
 
-See [Sampling](sampling.md) for the sampling and chain APIs (`sample`, `Gibbs`, `AbstractLatentKernel`, `SymChain`).
+Install it from GitHub:
+
+```julia
+using Pkg
+Pkg.add(url="https://github.com/EvoArt/PracticalBayes")
+```
+
+## What is different here
+
+- **Samplers you write yourself, outside the gradient.** A block of a `Gibbs`
+  sampler can be your own [`AbstractLatentKernel`](@ref), alongside NUTS and
+  conjugate blocks. It runs once per sweep and is never differentiated, so it
+  can update discrete or very large latent variables with any code. See
+  [Sample with Gibbs blocks](@ref).
+- **Float32.** A model can run in Float32 end to end, with a few rules about
+  literals. See [Run a model in Float32](@ref).
+- **Trimmable models.** A simple model can be compiled into a standalone
+  binary with `juliac --trim`, with some restrictions. See
+  [Compile a model into a standalone binary](@ref).
+- **GPU data (untested).** Data can be held on a CUDA device. This has not
+  yet been run on GPU hardware and is a work in progress. See
+  [Keep data on a GPU](@ref).
+
+The package builds on AbstractPPL, AdvancedHMC, Bijectors, Distributions and
+LogDensityProblems. It does not use DynamicPPL or Turing.
+
+## Where to go next
+
+- New to the package: the [Tutorial](@ref).
+- Coming from Turing: [Port a model from Turing](@ref).
+- Every exported name: the [Reference](@ref).
+- How the pieces fit together: the [Explanation](@ref).
