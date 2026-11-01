@@ -330,6 +330,130 @@ function tilde_dot(f::FixedMode, ::Val{s}, y, dist_bcast, acc::Accum) where {s}
 end
 
 # ===========================================================================
+# `y[i] ~ dist` where `y` is a model ARGUMENT — an element-wise observe, the
+# looped form Turing users write by default:
+#
+#     for i in eachindex(y)
+#         y[i] ~ Normal(mu, sigma)
+#     end
+#
+# The compiler routes a site here (rather than to the assume-only
+# `tilde_index`) purely by Set membership at macro-expansion time — see
+# `_tilde_expansion`. None of these methods ever writes into `y`: it is the
+# caller's array, and overwriting it is exactly the bug this path replaced
+# (tracing used to write prior draws over the data).
+#
+# `missing` elements follow the `.~` predictive convention: `rand`/`predict`
+# (PriorMode, FixedMode with `predict=true`) draw a fresh value for them, while
+# every density-evaluating mode rejects them. Partially observed arrays are not
+# imputed — that would need a per-element parameter slot for just the missing
+# entries, which the static layout does not have.
+# ===========================================================================
+
+@noinline function _missing_element_error(s, idx)
+    throw(ArgumentError(
+        "observe site `$s[$(join(idx, ", "))]` is `missing`. An indexed observe `$s[i] ~ dist` " *
+        "needs data at every element it visits; partially observed arrays are not imputed. " *
+        "To draw new values for `$s`, fill it with `missing` and use `rand(model)` or " *
+        "`predict(model, draws)`."))
+end
+
+# The element a non-hot-path mode observes, with a clear error for the one
+# argument value that has no elements at all.
+@inline _data_element(::Val, y, idx) = y[idx...]
+_data_element(::Val{s}, ::Nothing, idx) where {s} = throw(ArgumentError(
+    "observe site `$s[$(join(idx, ", "))]`: `$s` is `nothing`. Pass the data, or an array " *
+    "of `missing` with the data's shape to draw it."))
+
+"""
+    tilde_index_observe(mode::EvalMode, ::Val{s}, y, idx, dist, acc) where {s}
+
+Handles `y[i...] ~ dist` when `y` is one of the model's arguments: scores the
+data element `y[i...]` under `dist` and adds it to the log-likelihood.
+"""
+@inline function tilde_index_observe(::EvalMode, ::Val, y, idx::Tuple, dist, acc::Accum)
+    # The entire hot path: one element read and one `logpdf`, i.e. the same
+    # work as the scalar observe `tilde(::EvalMode, ...)` above and as writing
+    # `@addlogprob! logpdf(dist, y[i])` by hand. No `missing` check here:
+    # `build_layout`'s TraceMode run visits every element first and rejects a
+    # `missing` one, so it cannot reach an EvalMode call.
+    return acc_lik(acc, logpdf(dist, y[idx...]))
+end
+
+function tilde_index_observe(::TraceMode, ::Val{s}, y, idx::Tuple, dist, acc::Accum) where {s}
+    v = _data_element(Val(s), y, idx)
+    v === missing && _missing_element_error(s, idx)
+    # Deliberately NO SiteRecord. Observed records are never consulted when
+    # building a layout (`build_layout`, Gibbs and `check_depends` all filter
+    # them out), and one record per element would make `Layout.meta` grow with
+    # the data: 10_000 observations would be 10_000 records, and under
+    # `@static_model` each record costs ~5 ms of compile time.
+    return acc_lik(acc, logpdf(dist, v))
+end
+
+# Writes one visited element into the mode's `values` NamedTuple, under the
+# site's name and at the element's own index, so a predictive draw comes back
+# as ONE array shaped like the data argument (matching what `.~` returns)
+# rather than a scalar overwritten on every loop iteration. Elements the loop
+# never visits stay `missing`; `_narrow_missing` (predict.jl) drops the
+# `Missing` from the element type afterwards when none are left.
+function _record_element!(ref, ::Val{s}, y, idx, x) where {s}
+    vals = ref[]
+    out = hasfield(typeof(vals), s) ? getfield(vals, s) :
+          fill!(similar(y, Union{Missing,typeof(x)}), missing)
+    if !(x isa eltype(out))
+        # e.g. an earlier element was observed as Int and this one drawn as Float64
+        out = convert(AbstractArray{Union{eltype(out),typeof(x)}}, out)
+    end
+    out[idx...] = x
+    ref[] = merge(vals, NamedTuple{(s,)}((out,)))
+    return nothing
+end
+
+# Only an argument that CAN hold `missing` is a fill-in target worth
+# recording — a plain `Vector{Float64}` is pure data, and `.~` likewise
+# records nothing for real data. Decided on the element type, so it folds to a
+# constant per model.
+_records_elements(y) = Missing <: eltype(y)
+
+function tilde_index_observe(p::PriorMode, ::Val{s}, y, idx::Tuple, dist, acc::Accum) where {s}
+    v = _data_element(Val(s), y, idx)
+    x = v === missing ? rand(p.rng, dist) : v
+    _records_elements(y) && _record_element!(p.values, Val(s), y, idx, x)
+    return acc_lik(acc, logpdf(dist, x))
+end
+
+function tilde_index_observe(f::FixedMode, ::Val{s}, y, idx::Tuple, dist, acc::Accum) where {s}
+    v = _data_element(Val(s), y, idx)
+    x = if v !== missing
+        v
+    elseif f.predict
+        # posterior-predictive draw for this element; see `predict`
+        rand(f.rng, dist)
+    else
+        _missing_element_error(s, idx)
+    end
+    _records_elements(y) && _record_element!(f.values, Val(s), y, idx, x)
+    return acc_lik(acc, logpdf(dist, x))
+end
+
+function tilde_index_observe(p::PointwiseMode, ::Val{s}, y, idx::Tuple, dist, acc::Accum) where {s}
+    v = _data_element(Val(s), y, idx)
+    v === missing && _missing_element_error(s, idx)
+    lp = logpdf(dist, v)
+    # One value per visited element, appended in visit order, so the site's
+    # vector lines up with the loop that produced it (and `flatten=true`
+    # concatenates sites the same way it does for `.~`).
+    pw = p.pointwise[]
+    if hasfield(typeof(pw), s)
+        push!(getfield(pw, s), lp)
+    else
+        p.pointwise[] = merge(pw, NamedTuple{(s,)}(([lp],)))
+    end
+    return acc_lik(acc, lp)
+end
+
+# ===========================================================================
 # EvalMode — the hot path. This is the code that must cost the same as
 # `Turing.@addlogprob!` on the observe side, and a single bijector transform
 # + logpdf on the assume side. No VarName is constructed, no context stack is
@@ -440,9 +564,11 @@ end
 """
     tilde_index(mode::EvalMode, ::Val{s}, container, (i,), dist, acc) where {s}
 
-Handles `x[i] ~ dist` sites. `container` is the pre-declared array bound to
-`x`; the element at linear index `i` is written (assume) or read (observe)
-and the corresponding sub-range of `θ` is selected via `elem_range`.
+Handles `x[i] ~ dist` sites where `x` is NOT a model argument, i.e. an indexed
+family of parameters (an argument container is data, and goes to
+`tilde_index_observe` instead). `container` is the pre-declared array
+bound to `x`; the element at linear index `i` is written and the
+corresponding sub-range of `θ` is selected via `elem_range`.
 
 REQUIRED: `container` (`x`) MUST be declared as `Vector{paramtype(__mode__)}(undef, n)`
 (see `paramtype`, modes.jl), NOT `Vector{Float64}(undef, n)`. `paramtype`
@@ -547,10 +673,12 @@ function tilde(t::TraceMode, ::Val{s}, dist, value, acc::Accum) where {s}
 end
 
 function tilde_index(t::TraceMode, ::Val{s}, container, idx::Tuple, dist, acc::Accum) where {s}
-    # Indexed families are always treated as unknowns during tracing (there's
-    # no argument/conditioning mechanism for individual array elements in the
-    # MVP — see the "Conditioning granularity" restriction in the plan), so
-    # this is simpler than the scalar `tilde` above: always draw and record.
+    # Only containers that are NOT model arguments reach this method (an
+    # argument container is data and goes to `tilde_index_observe`), so the
+    # family is always unknown here — there's no conditioning mechanism for
+    # individual array elements (see the "Conditioning granularity"
+    # restriction in the plan). Simpler than the scalar `tilde` above: always
+    # draw and record.
     k = LinearIndices(size(container))[idx...]
     x0 = rand(t.rng, dist)
     container[k] = x0

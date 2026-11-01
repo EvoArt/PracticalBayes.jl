@@ -22,8 +22,21 @@ datasets for the model itself.
 function Random.rand(rng::Random.AbstractRNG, m::Model)
     mode = PriorMode(rng, m.conditioned)
     evaluate(m, mode, Accum(0.0))
-    return mode.values[]
+    return _narrow_missing(mode.values[])
 end
+
+# An indexed observe (`y[i] ~ dist` over a `missing`-filled argument) is
+# recorded element by element into a `Union{Missing,T}` array (see
+# `_record_element!` in tilde.jl), since nothing guarantees the loop visits
+# every element. Once the model has run, an array with no `missing` left is
+# narrowed to plain `T`, so a looped observe returns the same `Vector{Float64}`
+# a `.~` observe does.
+_narrow_missing(nt::NamedTuple) = map(_narrow_missing, nt)
+function _narrow_missing(x::AbstractArray)
+    (Missing <: eltype(x) && !any(ismissing, x)) || return x
+    return convert(AbstractArray{nonmissingtype(eltype(x))}, x)
+end
+_narrow_missing(x) = x
 Random.rand(m::Model) = rand(Random.default_rng(), m)
 Random.rand(rng::Random.AbstractRNG, m::Model, n::Integer) = [rand(rng, m) for _ in 1:n]
 Random.rand(m::Model, n::Integer) = rand(Random.default_rng(), m, n)
@@ -36,7 +49,7 @@ Random.rand(m::Model, n::Integer) = rand(Random.default_rng(), m, n)
 function _fixed_evaluate(rng, m::Model, fixed::NamedTuple; predict::Bool=false)
     mode = FixedMode(rng, fixed, m.conditioned; predict=predict)
     retval, acc = evaluate(m, mode, Accum(0.0))
-    return retval, acc, mode.values[]
+    return retval, acc, _narrow_missing(mode.values[])
 end
 
 """

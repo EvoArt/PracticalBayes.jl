@@ -18,9 +18,13 @@ Tilde-site rewriting:
     the model's argument names (so it may be data), or
     `(x, __acc__) = tilde(__mode__, Val(:x), D, getcond(__mode__, Val(:x)), __acc__)`
     otherwise (`x` is a parameter unless conditioned via `model | (; x=...)`).
-  * `x[i...] ~ D` becomes
+  * `x[i...] ~ D` where `x` is one of the model's argument names observes the
+    element `x[i...]` as data:
+    `__acc__ = tilde_index_observe(__mode__, Val(:x), x, (i...,), D, __acc__)`.
+    Otherwise `x` is an indexed family of parameters and the site becomes
     `(x[i...], __acc__) = tilde_index(__mode__, Val(:x), x, (i...,), D, __acc__)`
-    (the container `x` must already exist, e.g. `x = Vector{Float64}(undef, n)`).
+    (the container `x` must already exist, e.g.
+    `x = Vector{paramtype(__mode__)}(undef, n)`).
   * `x .~ D` (broadcast observe/assume over an already-bound collection `x`)
     becomes a single vectorized accumulation via `tilde_dot`, not a loop.
 
@@ -296,6 +300,24 @@ function _tilde_expansion(lhs, rhs, argnames)
         idx = lhs.args[2:end]
         container isa Symbol || error("indexed tilde LHS must index a bare variable, got: $lhs")
         s = container
+        if s in argnames
+            # The container is a model argument (or a `:=` name), so its
+            # elements are DATA: `for i in eachindex(y); y[i] ~ Normal(mu, 1); end`
+            # observes each `y[i]`. This is the same Set-membership rule plain
+            # `y ~ D` and `y .~ D` already use above, decided here at
+            # macro-expansion time so the hot path carries no runtime check.
+            #
+            # Before this branch existed every indexed site went to
+            # `tilde_index` (assume-only), so a looped observe silently turned
+            # every data element into a parameter AND wrote prior draws over
+            # the caller's data array during tracing. The observe path never
+            # writes into `container`; see `tilde_index_observe` in tilde.jl.
+            return quote
+                __acc__ = PracticalBayes.tilde_index_observe(
+                    __mode__, $(Val)($(QuoteNode(s))), $(container), ($(idx...),), $(rhs), __acc__
+                )
+            end
+        end
         # `tilde_index` both returns the drawn/observed value AND mutates
         # `container[k] = x` itself (see tilde.jl), so the LHS-assignment
         # target here is just a throwaway — we don't need `container[idx...]`
