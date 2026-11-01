@@ -225,7 +225,7 @@ function gradmode_value_and_gradient!(plan::GLMPlan, layout, args, theta, g, ws)
     # PARKED, deliberately (decision 2026-09-04). The only thing it unlocks is
     # `--trim=safe` for GradMode-recognized models, and trimming already works
     # today for anyone willing to hand-write a gradient (204 -> 0 errors, 2.9 MB
-    # binary matching the JIT to 16 digits — see trimtest/FINDINGS.md). So this
+    # binary matching the JIT to 16 digits). So this
     # is convenience, not capability. The dispatch cost it also removes is
     # small: profiling puts the closed form at 79.6% BLAS `gemv!` at
     # N=20000/P=200, so the prior arithmetic is not where the time goes.
@@ -238,7 +238,7 @@ function gradmode_value_and_gradient!(plan::GLMPlan, layout, args, theta, g, ws)
     # which point gating buys nothing. `@static_model` is opt-in because it
     # costs ~5ms compile time per site record; this has no such tradeoff and is
     # strictly better for every model, so it should be unconditional or not at
-    # all. See trimtest/HANDOVER.md for the trim-side context.
+    # all.
     vals = Dict{Symbol,Any}()
     lp = zero(T)
     for ps in plan.priors

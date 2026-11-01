@@ -365,8 +365,7 @@ end
 
 # Recursive over the tuple of names so each `getproperty(slots, n)` is a
 # distinct, inferable call — a `for`/`any` over `names` would infer the loop
-# variable as a Symbol union and defeat the constant-folding this depends on
-# (the same tuple-iteration trap documented in EpidemicTrajectories' CLAUDE.md).
+# variable as a Symbol union and defeat the constant-folding this depends on.
 @inline _any_flat(layout, ::Val{()}) = false
 @inline function _any_flat(layout, ::Val{names}) where {names}
     n = first(names)

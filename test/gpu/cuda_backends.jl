@@ -50,7 +50,7 @@ else
             # loop, `y ~ MvNormal(...)` not `.~`. On GPU data this is not a
             # style preference but a correctness requirement: either of the
             # alternatives indexes a CuArray element-by-element and trips
-            # `allowscalar(false)`. See CLAUDE.md's model-writing notes.
+            # `allowscalar(false)`.
             @model function gpu_reg(X, y)
                 pT = PracticalBayes.paramtype(__mode__)
                 k = size(X, 2)

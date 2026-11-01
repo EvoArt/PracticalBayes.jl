@@ -18,3 +18,6 @@ later considerations.md
 figures/
 ad_worklog.md
 epi_gradmode_assessment.md
+# Local working notes, not part of the package
+CLAUDE.md
+/trimtest/*.md

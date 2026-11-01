@@ -29,7 +29,7 @@
 # ---------------------
 # Turing is benchmarked here on CPU only, and that is a finding rather than an
 # omission. DynamicPPL promotes to Float64 internally regardless of the input
-# element type (see CLAUDE.md), so the Float32 axis does not exist on the
+# element type, so the Float32 axis does not exist on the
 # Turing side at all; and its VarInfo machinery indexes parameters
 # element-by-element, which is exactly what `CUDA.allowscalar(false)` forbids.
 # The script still ATTEMPTS the Turing GPU cell rather than assuming — if it
