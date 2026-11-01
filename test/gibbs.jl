@@ -113,10 +113,9 @@ end
 @testset "gibbs.jl: HMM Gibbs+FFBS matches NUTS on the marginalized model" begin
     means = (0.0, 5.0)
 
-    # `y[t] ~ dist` in a loop over already-observed data doesn't fit
-    # `x[i] ~ dist`'s assume-only container pattern (same porting idiom
-    # established throughout bench/corpus/ this session) — vectorized `.~`
-    # over the whole per-timestep mean vector instead.
+    # Vectorized `.~` over the whole per-timestep mean vector. A looped
+    # `y[t] ~ Normal(mu[t], sigma)` would observe the same data (see
+    # test/indexed_observe.jl); `.~` is just the faster form.
     @model function hmm_latent(y)
         p_stay ~ Beta(8, 2)
         sigma ~ Distributions.Exponential(1)

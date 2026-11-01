@@ -14,14 +14,27 @@ Draw from the prior predictive distribution. Parameters are drawn from their
 priors; an observed variable keeps its data if it has any and is drawn from the
 likelihood otherwise. Returns every variable, parameters and observations.
 
-To simulate a dataset, pass `missing` (or `fill(missing, n)` for a `.~`
-statement) for the data argument.
+To simulate a dataset, pass `missing` for the data argument, or
+`fill(missing, n)` for a `.~` or looped `y[i] ~` statement.
 """
 function Random.rand(rng::Random.AbstractRNG, m::Model)
     mode = PriorMode(rng, m.conditioned)
     evaluate(m, mode, Accum(0.0))
-    return mode.values[]
+    return _narrow_missing(mode.values[])
 end
+
+# An indexed observe (`y[i] ~ dist` over a `missing`-filled argument) is
+# recorded element by element into a `Union{Missing,T}` array (see
+# `_record_element!` in tilde.jl), since nothing guarantees the loop visits
+# every element. Once the model has run, an array with no `missing` left is
+# narrowed to plain `T`, so a looped observe returns the same `Vector{Float64}`
+# a `.~` observe does.
+_narrow_missing(nt::NamedTuple) = map(_narrow_missing, nt)
+function _narrow_missing(x::AbstractArray)
+    (Missing <: eltype(x) && !any(ismissing, x)) || return x
+    return convert(AbstractArray{nonmissingtype(eltype(x))}, x)
+end
+_narrow_missing(x) = x
 Random.rand(m::Model) = rand(Random.default_rng(), m)
 Random.rand(rng::Random.AbstractRNG, m::Model, n::Integer) = [rand(rng, m) for _ in 1:n]
 Random.rand(m::Model, n::Integer) = rand(Random.default_rng(), m, n)
@@ -34,7 +47,7 @@ Random.rand(m::Model, n::Integer) = rand(Random.default_rng(), m, n)
 function _fixed_evaluate(rng, m::Model, fixed::NamedTuple; predict::Bool=false)
     mode = FixedMode(rng, fixed, m.conditioned; predict=predict)
     retval, acc = evaluate(m, mode, Accum(0.0))
-    return retval, acc, mode.values[]
+    return retval, acc, _narrow_missing(mode.values[])
 end
 
 """
@@ -107,9 +120,10 @@ Posterior predictive sampling. For each `NamedTuple` in `draws` (see
 [`chain_draws`](@ref)), set the parameters to that draw and draw every observed
 variable that has no data from the likelihood.
 
-Pass `model` with the data argument replaced by missing values. For a `.~`
-statement give the output shape, `fill(missing, n)`; a bare `missing` works
-only for `~`.
+Pass `model` with the data argument replaced by missing values. For a `.~` or
+looped `y[i] ~` statement give the output shape, `fill(missing, n)`; a bare
+`missing` works only for `y ~`. An array with only some elements missing is not
+supported.
 
 Returns one `NamedTuple` per draw holding every variable.
 

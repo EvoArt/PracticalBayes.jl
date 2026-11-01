@@ -2,14 +2,16 @@
 
 Most Turing models run unchanged. These are the differences.
 
-## Observe data with `y ~` or `y .~`, not `y[i] ~`
+## Which statements observe data
 
-An indexed statement `x[i] ~ dist` always declares a parameter, even when `x`
-is a data argument. Observe data as a whole:
+As in Turing, `y ~ dist`, `y .~ dist` and `y[i] ~ dist` observe `y` when `y`
+is a model argument (or a `:=` name), and declare parameters otherwise. An
+argument the body reassigns to a new container still counts as data.
+
+A loop of `y[i] ~` works, but `.~` over the whole vector is much faster:
 
 ```julia
-y .~ Normal.(mu, sigma)            # instead of: for i in eachindex(y); y[i] ~ ...; end
-y ~ MvNormal(X * beta, sigma^2 * I)
+y .~ Normal.(mu, sigma)            # faster than: for i in eachindex(y); y[i] ~ Normal(mu[i], sigma); end
 ```
 
 ## `.~` takes per-element distributions, and only observes
@@ -19,19 +21,23 @@ y ~ MvNormal(X * beta, sigma^2 * I)
 distribution with `~`. For an IID vector prior, `beta ~ MvNormal(...)` is much
 faster under reverse-mode AD than a loop of `beta[j] ~`.
 
-## Predictive sampling at a `.~` statement needs the output shape
+## Predictive sampling needs the output shape
 
-Pass `fill(missing, n)` for the data, not a bare `missing`:
+For a `.~` or looped `y[i] ~` observe, pass `fill(missing, n)` for the data,
+not a bare `missing`:
 
 ```julia
 predict(model(X, fill(missing, n)), chain_draws(chn))
 ```
 
-## Warm-up draws stay in the chain
+## Warm-up draws are kept unless you discard them
 
-`sample(model, NUTS(0.8), N; n_adapts)` returns all `N` iterations. Drop the
-warm-up with `chn[iter=(n_adapts + 1):N]`. A `Gibbs` run honours
-`discard_initial`.
+Turing drops the adaptation draws by default; PracticalBayes keeps them. Pass
+`discard_initial`:
+
+```julia
+sample(model, NUTS(0.8), 1000; n_adapts=1000, discard_initial=1000)
+```
 
 ## Only whole variables can be conditioned
 

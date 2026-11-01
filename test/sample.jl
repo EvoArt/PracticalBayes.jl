@@ -206,3 +206,68 @@ end
     @test raw[1] isa NamedTuple
     @test haskey(raw[1], :mu) && haskey(raw[1], :z)
 end
+
+@testset "sample.jl: n_adapts default, discard_initial and thinning (HMC)" begin
+    # These three were silently ignored on the chain path before: it called
+    # `AbstractMCMC.step` directly, which defaults to NO adaptation and knows
+    # nothing about discard_initial/thinning (those live in `mcmcsample`).
+    # AdvancedHMC's per-iteration `is_adapt` stat shows exactly which kept
+    # iterations were warm-up.
+    @model function m3(y)
+        mu ~ Normal(0, 1)
+        y .~ Normal.(mu, 1.0)
+    end
+    m = m3(randn(StableRNG(5), 10))
+    is_adapt(chn) = vec(chn[FlexiChains.Extra(:is_adapt)])
+
+    # default n_adapts = min(N ÷ 10, 1000), AdvancedHMC's own default
+    chn = AbstractMCMC.sample(StableRNG(6), m, NUTS(0.8), 100; progress=false)
+    @test count(is_adapt(chn)) == 10
+
+    # discard_initial = n_adapts drops exactly the warm-up, keeping N draws
+    chn = AbstractMCMC.sample(StableRNG(6), m, NUTS(0.8), 40;
+                              n_adapts=20, discard_initial=20, progress=false)
+    @test size(chn, 1) == 40
+    @test !any(is_adapt(chn))
+
+    # one fewer discarded iteration leaves exactly the last warm-up draw first
+    chn = AbstractMCMC.sample(StableRNG(6), m, NUTS(0.8), 40;
+                              n_adapts=20, discard_initial=19, progress=false)
+    @test is_adapt(chn)[1] && !any(is_adapt(chn)[2:end])
+
+    # thinning: 1 + 5 + 3*(N-1) steps in total, keeping iterations 6, 9, 12,
+    # 15, ... — so with warm-up = iterations 1:12, exactly the first three
+    # kept draws are warm-up
+    chn = AbstractMCMC.sample(StableRNG(6), m, NUTS(0.8), 10;
+                              n_adapts=12, discard_initial=5, thinning=3, progress=false)
+    @test size(chn, 1) == 10
+    @test is_adapt(chn) == [true, true, true, falses(7)...]
+
+    # the raw path goes through AdvancedHMC/AbstractMCMC's own `sample`, so it
+    # must agree with the chain path on all of the above
+    raw = AbstractMCMC.sample(StableRNG(6), m, NUTS(0.8), 40; n_adapts=20,
+                              discard_initial=20, chain_type=nothing, progress=false)
+    @test length(raw) == 40
+    @test !any(t.stat.is_adapt for t in raw)
+end
+
+@testset "sample.jl: Float32 sampler gives a Float32 run" begin
+    # `NUTS(0.8f0)` used to fail with PreparationMismatchError: θ0 was always
+    # built in Float64 while AdvancedHMC converts the initial point to the
+    # sampler's own float type.
+    @model function m4(y)
+        mu ~ Normal(0.0f0, 1.0f0)
+        y .~ Normal.(mu, 1.0f0)
+    end
+    y = Float32.(randn(StableRNG(8), 20))
+    chn = AbstractMCMC.sample(StableRNG(9), m4(y), NUTS(0.8f0), 200;
+                              n_adapts=100, discard_initial=100, progress=false)
+    mu = vec(chn[:mu])
+    @test eltype(mu) === Float32
+    post_var = 1 / (1 + length(y))
+    @test abs(mean(mu) - post_var * sum(y)) < 5 * std(mu) / sqrt(length(mu))
+
+    raw = AbstractMCMC.sample(StableRNG(9), m4(y), NUTS(0.8f0), 20;
+                              n_adapts=10, chain_type=nothing, progress=false)
+    @test eltype(raw[1].z.θ) === Float32
+end

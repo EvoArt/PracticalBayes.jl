@@ -11,12 +11,14 @@ Statements in the body:
   `logpdf(dist, x)` is added to the log-likelihood. Otherwise `x` is a
   parameter. Pass `missing` for an argument to make it a parameter, or bind
   data later with [`condition`](@ref).
-- `x[i] ~ dist`: one element of an indexed family. The container must exist
-  first; for continuous elements create it with
+- `x[i] ~ dist`: if `x` is a model argument, the element `x[i]` is observed.
+  Otherwise `x[i]` is one element of an indexed family of parameters; create
+  the container first, for continuous elements with
   `x = Vector{paramtype(__mode__)}(undef, n)` (see [`paramtype`](@ref)).
-- `y .~ dists`: observe every element of the argument `y` at once. `dists` may
-  be one distribution or a broadcast such as `Normal.(mu, sigma)`. `.~` cannot
-  introduce parameters; use an array distribution with `~` for those.
+- `y .~ dists`: observe every element of the argument `y` at once, faster than
+  a loop. `dists` may be one distribution or a broadcast such as
+  `Normal.(mu, sigma)`. `.~` cannot introduce parameters; use an array
+  distribution with `~` for those.
 - `z := expr`: an ordinary assignment, after which `z` counts as data, so a
   later `z ~ dist` observes it.
 - [`@addlogprob!`](@ref)` expr`: add `expr` to the log-likelihood.
@@ -284,6 +286,24 @@ function _tilde_expansion(lhs, rhs, argnames)
         idx = lhs.args[2:end]
         container isa Symbol || error("indexed tilde LHS must index a bare variable, got: $lhs")
         s = container
+        if s in argnames
+            # The container is a model argument (or a `:=` name), so its
+            # elements are DATA: `for i in eachindex(y); y[i] ~ Normal(mu, 1); end`
+            # observes each `y[i]`. This is the same Set-membership rule plain
+            # `y ~ D` and `y .~ D` already use above, decided here at
+            # macro-expansion time so the hot path carries no runtime check.
+            #
+            # Before this branch existed every indexed site went to
+            # `tilde_index` (assume-only), so a looped observe silently turned
+            # every data element into a parameter AND wrote prior draws over
+            # the caller's data array during tracing. The observe path never
+            # writes into `container`; see `tilde_index_observe` in tilde.jl.
+            return quote
+                __acc__ = PracticalBayes.tilde_index_observe(
+                    __mode__, $(Val)($(QuoteNode(s))), $(container), ($(idx...),), $(rhs), __acc__
+                )
+            end
+        end
         # `tilde_index` both returns the drawn/observed value AND mutates
         # `container[k] = x` itself (see tilde.jl), so the LHS-assignment
         # target here is just a throwaway — we don't need `container[idx...]`

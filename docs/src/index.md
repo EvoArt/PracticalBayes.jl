@@ -15,7 +15,7 @@ using PracticalBayes, Distributions
     y .~ Normal.(α .+ β .* x, σ)
 end
 
-chn = sample(linreg(x, y), NUTS(0.8), 2000; n_adapts=1000)
+chn = sample(linreg(x, y), NUTS(0.8), 1000; n_adapts=1000, discard_initial=1000)
 ```
 
 Install it from GitHub:

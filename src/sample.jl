@@ -21,24 +21,26 @@ Draw `N` samples from the posterior of `model` with an HMC sampler such as
 `NUTS(0.8)` and return them as a [`SymChain`](@ref).
 
 # Keywords
-- `n_adapts`: number of warm-up iterations that adapt the step size and metric.
+- `n_adapts`: number of warm-up iterations that adapt the step size and
+  metric; defaults to `min(N ÷ 10, 1000)`.
+- `discard_initial`: iterations to run and drop before the `N` kept ones.
+  Pass `discard_initial=n_adapts` to drop the warm-up.
+- `thinning`: keep every `thinning`-th iteration.
 - `init`: starting values by name; others are drawn from the prior.
 - `adtype`: AD backend for the gradient, e.g. `AutoMooncake()`.
 - `progress`: show a progress meter; defaults to [`default_progress`](@ref).
 - `chain_type=nothing`: return AdvancedHMC's raw transitions instead.
 
-The chain holds all `N` iterations, warm-up included; drop the warm-up with
-`chn[iter=(n_adapts + 1):N]`. Parameters are reported on their constrained
-scale, and sampler statistics such as `:acceptance_rate` and `:n_steps` are
-included as extras. Parameters are `Float64`; for a Float32 run see
-[Run a model in Float32](@ref).
+Parameters are reported on their constrained scale, and sampler statistics such
+as `:acceptance_rate` and `:n_steps` are included as extras. The parameters
+take the sampler's number type, so `NUTS(0.8f0)` samples in Float32 (see
+[Run a model in Float32](@ref)).
 
 For several chains, use AbstractMCMC's interface:
 `sample(model, spl, AbstractMCMC.MCMCThreads(), N, nchains)`.
 
 ```julia
-chn = sample(model, NUTS(0.8), 2000; n_adapts=1000)
-chn = chn[iter=1001:2000]
+chn = sample(model, NUTS(0.8), 1000; n_adapts=1000, discard_initial=1000)
 ```
 """
 function AbstractMCMC.sample(
@@ -52,7 +54,15 @@ function AbstractMCMC.sample(
     progress=default_progress(),
     kwargs...,
 )
-    layout, θ0, store0 = build_layout(model; init=init)
+    # Build θ0 in the SAMPLER's float type, not a hardcoded Float64. AdvancedHMC
+    # converts `initial_params` to `sampler_eltype(spl)` itself (its
+    # `make_initial_params`), so with `NUTS(0.8f0)` it would hand a Vector{Float32}
+    # to a gradient prepared against Vector{Float64} and DifferentiationInterface
+    # throws `PreparationMismatchError`. Taking the type from the sampler keeps the
+    # prepared θ and the sampled θ identical; for the usual `NUTS(0.8)` this is
+    # Float64, i.e. exactly what was built before.
+    T = AdvancedHMC.sampler_eltype(spl)
+    layout, θ0, store0 = build_layout(model; init=init, T=T)
     ldf = LogDensityFunction(model, layout, store0, adtype; θ0=θ0)
     ldm = AbstractMCMC.LogDensityModel(ldf)
 
@@ -243,17 +253,46 @@ end
 # transitions ourselves and convert each to `(constrained_params, stats)` before
 # handing off to `bundle_samples`, so FlexiChains' generic `NamedTuple` path does
 # the chain-building rather than a bespoke `FlexiChain{Symbol}` method here.
-function _pb_sample_transitions(rng, ldm, spl, N; initial_params, progress=false, kwargs...)
+#
+# Because this loop calls `step` directly rather than going through
+# `AbstractMCMC.sample`, it has to supply the three things that wrapper would:
+#
+#   * `n_adapts`: `step` itself defaults to 0, i.e. NO step-size or mass-matrix
+#     adaptation at all. The default here is AdvancedHMC's own `sample` default,
+#     so `chain_type=nothing` (which does go through AdvancedHMC's `sample`) and
+#     the chain path adapt identically.
+#   * `discard_initial` / `thinning`: implemented by `AbstractMCMC.mcmcsample`,
+#     not by `step`, so without this they were silently swallowed and the chain
+#     always held every iteration, warm-up included. The step counting below is
+#     mcmcsample's: `1 + discard_initial + thinning * (N - 1)` steps in total,
+#     keeping the last of the discarded run and then every `thinning`-th step.
+function _pb_sample_transitions(rng, ldm, spl, N; initial_params, progress=false,
+                                n_adapts::Int=min(div(N, 10), 1_000),
+                                discard_initial::Int=0, thinning::Int=1, kwargs...)
+    N > 0 || throw(ArgumentError("the number of samples must be ≥ 1, got $N"))
+    discard_initial >= 0 || throw(ArgumentError("`discard_initial` must be non-negative, got $discard_initial"))
+    thinning >= 1 || throw(ArgumentError("`thinning` must be ≥ 1, got $thinning"))
     transitions = Vector{Any}(undef, N)
+    total_steps = 1 + discard_initial + thinning * (N - 1)
     # `progress` is consumed here, NOT forwarded: `AbstractMCMC.step` takes no
     # such keyword, and AdvancedHMC would pass it on into its own internals.
-    _run_with_progress(progress, "Sampling", N) do p
-        sample1, state = AbstractMCMC.step(rng, ldm, spl; initial_params=initial_params, kwargs...)
-        transitions[1] = sample1
-        _progress_update!(p, 1)
+    # The meter spans every step taken, discarded ones included, since they
+    # cost the same wall-clock time.
+    _run_with_progress(progress, "Sampling", total_steps) do p
+        done = 1
+        t, state = AbstractMCMC.step(rng, ldm, spl; initial_params=initial_params, n_adapts=n_adapts, kwargs...)
+        _progress_update!(p, done)
+        for _ in 1:discard_initial
+            t, state = AbstractMCMC.step(rng, ldm, spl, state; n_adapts=n_adapts, kwargs...)
+            _progress_update!(p, done += 1)
+        end
+        transitions[1] = t
         for i in 2:N
-            transitions[i], state = AbstractMCMC.step(rng, ldm, spl, state; kwargs...)
-            _progress_update!(p, i)
+            for _ in 1:thinning
+                t, state = AbstractMCMC.step(rng, ldm, spl, state; n_adapts=n_adapts, kwargs...)
+                _progress_update!(p, done += 1)
+            end
+            transitions[i] = t
         end
         return transitions, state
     end

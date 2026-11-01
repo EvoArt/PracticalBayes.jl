@@ -40,12 +40,12 @@ nothing # hide
 
 ## Sample
 
-We run NUTS for 2000 iterations. The first 1000 adapt the step size and are
-then dropped.
+We run NUTS for 1000 warm-up iterations, which adapt the step size and are
+then dropped, and keep the next 1000.
 
 ```@example tutorial
-chn = sample(StableRNG(2), model, NUTS(0.8), 2000; n_adapts=1000, progress=false)
-chn = chn[iter=1001:2000]
+chn = sample(StableRNG(2), model, NUTS(0.8), 1000;
+             n_adapts=1000, discard_initial=1000, progress=false)
 nothing # hide
 ```
 

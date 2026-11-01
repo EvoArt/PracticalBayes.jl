@@ -25,7 +25,7 @@ end
 
 x = range(0, 1; length=50)
 y = 1 .+ 2 .* x .+ 0.3 .* randn(50)
-chn = sample(linreg(x, y), NUTS(0.8), 2000; n_adapts=1000)
+chn = sample(linreg(x, y), NUTS(0.8), 1000; n_adapts=1000, discard_initial=1000)
 chn[:β]
 ```
 
