@@ -1,53 +1,41 @@
 using MacroTools: MacroTools, @capture, postwalk, splitdef, combinedef
 
 """
-    @model function name(args...) ... end
+    @model function name(args...; kwargs...) ... end
 
-Defines a PracticalBayes model. Expands to:
+Define a model. Calling `name(args...)` returns a [`Model`](@ref).
 
-  * an evaluator `_name_eval(__mode__, __acc__, args...)` whose body is the
-    user's code with every `~` site rewritten (see below), and every
-    `return expr` rewritten to `return (expr, __acc__)` (a bare fallthrough
-    end-of-function also returns `(nothing, __acc__)`);
-  * a constructor `name(args...) = Model(_name_eval, (; args...))`.
+Statements in the body:
 
-Tilde-site rewriting:
+- `x ~ dist`: if `x` is a model argument holding data, `x` is observed and
+  `logpdf(dist, x)` is added to the log-likelihood. Otherwise `x` is a
+  parameter. Pass `missing` for an argument to make it a parameter, or bind
+  data later with [`condition`](@ref).
+- `x[i] ~ dist`: one element of an indexed family. The container must exist
+  first; for continuous elements create it with
+  `x = Vector{paramtype(__mode__)}(undef, n)` (see [`paramtype`](@ref)).
+- `y .~ dists`: observe every element of the argument `y` at once. `dists` may
+  be one distribution or a broadcast such as `Normal.(mu, sigma)`. `.~` cannot
+  introduce parameters; use an array distribution with `~` for those.
+- `z := expr`: an ordinary assignment, after which `z` counts as data, so a
+  later `z ~ dist` observes it.
+- [`@addlogprob!`](@ref)` expr`: add `expr` to the log-likelihood.
+- `return expr`: the value [`returned`](@ref) gives back.
 
-  * `x ~ D` where `x` is a bare `Symbol` becomes
-    `(x, __acc__) = tilde(__mode__, Val(:x), D, x, __acc__)` if `x` is one of
-    the model's argument names (so it may be data), or
-    `(x, __acc__) = tilde(__mode__, Val(:x), D, getcond(__mode__, Val(:x)), __acc__)`
-    otherwise (`x` is a parameter unless conditioned via `model | (; x=...)`).
-  * `x[i...] ~ D` becomes
-    `(x[i...], __acc__) = tilde_index(__mode__, Val(:x), x, (i...,), D, __acc__)`
-    (the container `x` must already exist, e.g. `x = Vector{Float64}(undef, n)`).
-  * `x .~ D` (broadcast observe/assume over an already-bound collection `x`)
-    becomes a single vectorized accumulation via `tilde_dot`, not a loop.
+Discrete parameters (`Categorical`, `Bernoulli`, ...) cannot be sampled by HMC;
+give them a latent kernel in [`Gibbs`](@ref).
 
-`z := expr` declares `z` as a plain deterministic local — exactly an ordinary
-Julia assignment at runtime (no tilde machinery, no accumulator involvement),
-but it also marks `z` as "data available" for the REST of the model body,
-exactly like a model argument. This is what lets you condition on a
-computed-in-model quantity: e.g.
+```julia
+@model function linreg(x, y)
+    α ~ Normal(0, 10)
+    β ~ Normal(0, 10)
+    σ ~ Exponential(1)
+    y .~ Normal.(α .+ β .* x, σ)
+end
 
-    @model function f(x)
-        mu ~ Normal(0, 1)
-        z := mu + x        # z is a plain local, computed once
-        z ~ Normal(0, 1)   # observe: conditions on z's computed value
-    end
-
-Without `:=`, a bare `z ~ dist` where `z` is not a model argument is always
-treated as a new parameter (see below) — `:=` is the escape hatch for "this
-name already has a value by the time it's used, so treat it like an
-argument," decided entirely at macro-expansion time (no runtime cost beyond
-the assignment itself).
-
-No `VarName` is constructed and no context stack is walked at any tilde site
-— the mode argument alone determines behavior, via ordinary Julia dispatch.
-This is the key difference from DynamicPPL's `@model`: here, dispatch on the
-*type* of `__mode__` (and, for the assume path, on the *type* of a slot
-looked up from an isbits NamedTuple) does all the work that DynamicPPL does
-at runtime via its `AbstractContext` chain.
+m = linreg(x, y)
+chn = sample(m, NUTS(0.8), 1000)
+```
 """
 macro model(expr)
     # `splitdef` (MacroTools) parses `function name(args...; kwargs...) body end`
@@ -342,54 +330,25 @@ end
     @addlogprob!(expr)
     @addlogprob!(expr, depends=(:a, :b, ...))
 
-Only valid inside an `@model` body. Adds `expr`'s value directly to the
-model's accumulated log-LIKELIHOOD (not prior) — the escape hatch for a
-scalar log-density term that doesn't come from a `~`/`.~` site against a
-`Distribution`, e.g. a hand-written marginal likelihood (summing out a
-discrete latent via a forward algorithm) or any other manually-computed
-contribution. Outside a model body this macro does nothing useful on its
-own; `@model`'s compiler recognizes and rewrites the `@addlogprob!(...)`
-call form textually (via `_rewrite_addlogprob`, mirroring how `~`/`.~`/`:=`
-are recognized), so this definition exists only so the bare syntax parses
-and gives a clear error if it's ever evaluated outside a model body.
+Add `expr` to the log-likelihood. Valid only inside an [`@model`](@ref) body.
 
-# `depends`: skipping terms that can't matter to a Gibbs block
+Use it for a log-density term that is not a `~` statement, such as a
+likelihood with a discrete latent summed out.
 
-`depends` names the model variables `expr` actually reads. It is a pure
-OPTIMIZATION HINT for `Gibbs` sampling and changes no result: under a block
-that owns none of the named variables, they are all `ValueSlot`s, so `expr`
-is a constant w.r.t. that block's parameters — it shifts the log density by a
-fixed amount (which cancels in the Metropolis ratio) and contributes exactly
-zero to the gradient. Declaring `depends` lets the evaluator SKIP the term
-entirely for such blocks, instead of computing it and differentiating through
-it to get a guaranteed-zero result.
-
-This matters when a model has several expensive `@addlogprob!` terms and a
-`Gibbs` sampler with more than one HMC block. Without `depends`, EVERY block
-evaluates and differentiates EVERY term. Measured on a 2384x161 epidemic model
-whose two terms are a transition likelihood and a much cheaper observation
-likelihood, the block owning only the observation parameters ran **4.4x**
-faster with `depends` (13.93 ms -> 3.15 ms per gradient), with gradients
-identical to 0.0.
+`depends` lists the model variables `expr` reads. A [`Gibbs`](@ref) HMC block
+that owns none of them then skips the term, which cannot change its gradient.
+Name every variable `expr` reads: a missing name silently drops a gradient
+term. [`check_depends`](@ref) tests the annotations. Without `depends` the term
+is always evaluated.
 
 ```julia
-@model function m(data, y, ll, oll)
+@model function m(data)
     a ~ Normal()
     b ~ Normal()
-    # `ll` reads only `a`; a block sampling `b` alone skips it entirely.
-    @addlogprob! ll(a, data)  depends=(:a,)
-    @addlogprob! oll(b, data) depends=(:b,)
+    @addlogprob! loglik_a(a, data) depends=(:a,)
+    @addlogprob! loglik_b(b, data) depends=(:b,)
 end
 ```
-
-Correctness is the user's responsibility, exactly as for the term itself: name
-every variable `expr` reads. Under-declaring silently drops a real gradient
-contribution for the blocks that own the omitted variables. Omitting `depends`
-is always safe — the term is then evaluated unconditionally, as before.
-
-Only `Gibbs`'s per-block evaluation looks at this. A single-block/whole-model
-evaluation has every variable in the flat vector, so no term is ever skipped
-and behaviour is bit-identical to omitting `depends`.
 """
 macro addlogprob!(expr)
     return :(error(
@@ -522,30 +481,15 @@ end
 """
     @static_model function name(args...) ... end
 
-Identical to [`@model`](@ref), but models defined this way default to a
-`Layout` whose `meta` is a `Tuple` rather than a `Vector`, which is what
-`juliac --trim` needs.
+Define a model exactly as [`@model`](@ref) does, but make
+[`build_layout`](@ref) default to `static=true`: a layout whose site records are
+held in a `Tuple`, as `juliac --trim` needs.
 
-The generated evaluator is byte-for-byte the same as `@model`'s — only the
-default layout differs. `build_layout(m; static=false)` on a static model, or
-`static=true` on an ordinary one, both work; the macro only picks the default.
+Use it for a model that will be compiled into a standalone binary. Compile time
+grows with the number of site records, so write an indexed family as one array
+distribution (`x ~ MvNormal(zeros(n), I)`) rather than a loop of `x[i] ~`.
 
-Use this when the model will be compiled into a standalone binary. The cost is
-compile time, roughly 5 ms per site record, so a model whose indexed family is
-written as a loop pays for every element:
-
-    @static_model function slow(y, n)
-        for i in 1:n
-            x[i] ~ Normal(0, 1)      # n records -> n * ~5 ms
-        end
-    end
-
-    @static_model function fast(y, n)
-        x ~ MvNormal(zeros(n), 1.0)  # ONE record regardless of n
-    end
-
-Both are the same model; only the first pays. Distinct distribution *types*
-cost nothing — it is the record count that matters.
+See the [trimming guide](@ref "Compile a model into a standalone binary").
 """
 macro static_model(expr)
     # The evaluator and constructor are exactly what `@model` builds; the only

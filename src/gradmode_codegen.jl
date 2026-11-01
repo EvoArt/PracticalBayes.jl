@@ -46,61 +46,6 @@
 # automatic path just leaves the requested backend in place.
 # =============================================================================
 
-"""
-    GradMode()
-
-Opt-in AD type selecting the closed-form analytical gradient for models
-`recognize_glm` accepts. Pass it where you would pass an `ADTypes` backend:
-
-    ldf = LogDensityFunction(model, layout, store, GradMode(); θ0=θ0)
-
-**Opt-in on purpose — it is NOT always faster.** Measured against the fastest
-general backend per cell on logistic regression (see the factorial sweep in
-the project notes): ~4.9-5.7x at N=5000-20000 with P=50-200, but **0.48-0.96x
-(i.e. SLOWER) at N<=1000 with P<=10**, where ForwardDiff's forward-mode cost
-is proportional to a tiny P and this path's fixed per-call overhead dominates.
-Use it for large-N, moderate-to-large-P models; use ForwardDiff for small ones.
-
-If the model is not recognized, construction throws with the reason rather
-than silently falling back — an opt-in request for a fast path should tell you
-when it cannot be honoured, otherwise you would think you had it and not.
-Use `is_gradmode_compatible(model)` to ask without throwing.
-
-## What "linear predictor" means here
-
-Recognition is SYNTACTIC: linearity in the parameters must be visible in the
-expression, not merely true of it. The accepted shapes are sums of
-
-  - `X * beta`     — data matrix times a parameter vector
-  - `x .* beta`    — data vector times a SCALAR parameter
-  - `a[idx]`       — a parameter gathered by a data index (group effects)
-  - a bare parameter (intercept) or a bare data name (offset)
-
-So this is recognized:
-
-```julia
-y ~ arraydist(LogPoisson.(X*beta .+ offset))            # accepted
-```
-
-and this is not:
-
-```julia
-y ~ arraydist(LogPoisson.(X*beta .+ sigma .* (B*z)))    # rejected
-```
-
-The second is a log-Gaussian Cox process with a latent field, and the reason
-it is rejected is `sigma .* (B*z)`: both `sigma` and `z` are PARAMETERS, so
-that term is bilinear, not linear. The whole design here is one parameter per
-term — `_gm_pullback_term!` pushes `dL/dEta` back to a single destination —
-and a product of two parameters would need two, each scaled by the other's
-current value. Supporting it is a change to the term contract, not an extra
-case, so it is deliberately out of scope.
-
-Rejection is loud and falls back to general AD, which is correct but slower.
-
-Correctness is not assumed: verify with `check_gradmode` before relying on it
-for real inference.
-"""
 # FUTURE WORK: GradMode as a per-site RULE rather than a whole-model swap.
 #
 # Today this is all-or-nothing at model level: `LogDensityFunction` checks
@@ -121,6 +66,30 @@ for real inference.
 # bookkeeping for everything else might swamp the saving. Measure before
 # building.
 
+"""
+    GradMode()
+
+Backend that computes the gradient in closed form, for models recognised as
+generalised linear models. [`LogDensityFunction`](@ref) already uses it for a
+recognised model whatever backend you ask for; pass `GradMode()` to make that a
+requirement, so that construction throws if the model is not recognised.
+
+A model is recognised when its linear predictor is visibly linear in the
+parameters: a sum of `X * beta` (data matrix times parameter vector),
+`x .* b` (data vector times scalar parameter), `a[idx]` (a parameter indexed
+by data), a scalar parameter, or data. A product of two parameters is not
+recognised. It cannot be used for a [`Gibbs`](@ref) block that holds only part
+of the model.
+
+```julia
+@model function poisson_reg(X, y)
+    beta ~ MvNormal(zeros(size(X, 2)), I)
+    y ~ arraydist(LogPoisson.(X * beta))
+end
+```
+
+See also [`is_gradmode_compatible`](@ref), [`check_gradmode`](@ref).
+"""
 struct GradMode end
 
 """
@@ -136,23 +105,19 @@ gradmode_plan(::Any) = nothing
 """
     is_gradmode_compatible(model::Model) -> Bool
 
-Whether `model` is recognized as a GLM that `GradMode()` can differentiate in
-closed form. Cheap: recognition happens at `@model` expansion time, so this is
-a lookup, not an analysis.
+Whether `model` was recognised as a generalised linear model with a
+closed-form gradient (see [`GradMode`](@ref)). `false` means the model will use
+ordinary AD, not that it is not a GLM.
 
-The closed form is selected automatically for a recognized model, so you do not
-need this to benefit from it. It is for deciding something yourself — picking a
-backend per model in a script that builds several, or asserting in a test that
-a model you expect to be recognized still is after an edit:
+```jldoctest
+julia> @model function reg(x, y)
+           b ~ Normal(0, 1)
+           y ~ MvNormal(x .* b, 1.0)
+       end;
 
-```julia
-adtype = is_gradmode_compatible(m) ? GradMode() : AutoMooncake()
+julia> is_gradmode_compatible(reg([1.0, 2.0], [0.5, 1.5]))
+true
 ```
-
-Recognition is syntactic and deliberately conservative: a model that is
-mathematically a GLM can still be rejected if it is not *visibly* one (see
-`GradMode`'s docstring for what the grammar accepts). A `false` means "not
-recognized", never "not a GLM".
 """
 is_gradmode_compatible(model::Model) = gradmode_plan(model.f) !== nothing
 
@@ -862,19 +827,17 @@ end
 # =============================================================================
 
 """
-    check_gradmode(plan, layout, args, ldf; n=8, rtol=1e-6, atol=1e-8, rng)
+    check_gradmode(plan, layout, args, ldf; n=8, rtol=1e-6, atol=1e-8, rng, verbose=false) -> Bool
 
-Compare the closed-form gradient against a general-AD gradient (`ldf`, a
-`LogDensityFunction` with an `adtype`) at `n` randomized non-zero points.
-Returns `true` when every point agrees.
+Compare the closed-form gradient with the AD gradient of `ldf` at `n` random
+points and return `true` if they agree. `plan` is
+`PracticalBayes.gradmode_plan(model.f)`, `args` is `model.args`, and `ldf` is
+built with `closed_form=false`.
 
-This is the safety net that licenses using `GradMode` at all, and mirrors
-`check_depends.jl`'s role for `depends=` annotations. Recognition is only a
-syntactic hint; a recognizer bug, a wrong derivative in the tables above, or a
-model shape that is accepted but subtly different would all show up here.
-
-Points are drawn AWAY from zero on purpose: at theta = 0 many terms vanish
-(`beta = 0` kills every matvec contribution) and sign errors hide.
+```julia
+ldf = LogDensityFunction(m, layout, store, AutoForwardDiff(); θ0=θ0, closed_form=false)
+check_gradmode(PracticalBayes.gradmode_plan(m.f), layout, m.args, ldf)
+```
 """
 function check_gradmode(plan::GLMPlan, layout, args, ldf;
                         n::Int=8, rtol=1e-6, atol=1e-8, rng=Random.default_rng(), verbose::Bool=false)

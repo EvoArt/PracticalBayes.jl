@@ -5,12 +5,10 @@ using FlexiChains: FlexiChains, SymChain
 """
     SymChain
 
-Re-exported from FlexiChains.jl — the default `chain_type` returned by
-[`sample`](@ref). A `Symbol`-keyed `FlexiChains.FlexiChain`, indexable by
-`chn[:paramname]`; see FlexiChains.jl's own documentation for the full chain
-API (`FlexiChains.rhat`, `chainscat`/`chainsstack` for multi-chain combination,
-etc.). PracticalBayes only re-exports the name for convenience — it defines no
-behavior of its own on top of it.
+The chain type [`sample`](@ref) returns, re-exported from
+[FlexiChains.jl](https://github.com/penelopeysm/FlexiChains.jl). Index it by
+parameter name: `chn[:μ]` is a `(draws × chains)` matrix. A vector-valued
+parameter is one entry holding whole vectors; see [`param_draws`](@ref).
 """
 SymChain
 
@@ -19,30 +17,29 @@ SymChain
            adtype=AutoForwardDiff(), init=NamedTuple(), chain_type=SymChain,
            kwargs...)
 
-Run `spl` (e.g. `AdvancedHMC.NUTS(0.8)`) on `model` for `N` iterations and
-return the posterior draws.
+Draw `N` samples from the posterior of `model` with an HMC sampler such as
+`NUTS(0.8)` and return them as a [`SymChain`](@ref).
 
-By default the result is a `FlexiChains.SymChain`: every constrained parameter
-name in `model` is a `Parameter(:name)` key (mapped back to constrained space
-from the sampler's unconstrained draws), and every AdvancedHMC per-iteration
-statistic (`log_density`, `acceptance_rate`, `n_steps`, ...) is an
-`Extra(:stat_name)` key. Index and summarize the result as usual: `chn[:mu]`,
-`chn[Extra(:n_steps)]`, `summarystats(chn)`.
+# Keywords
+- `n_adapts`: number of warm-up iterations that adapt the step size and metric.
+- `init`: starting values by name; others are drawn from the prior.
+- `adtype`: AD backend for the gradient, e.g. `AutoMooncake()`.
+- `progress`: show a progress meter; defaults to [`default_progress`](@ref).
+- `chain_type=nothing`: return AdvancedHMC's raw transitions instead.
 
-`init` supplies starting values for named parameters (defaults to a draw from
-the prior). Pass `chain_type=nothing` to get AdvancedHMC's raw
-`Vector{AdvancedHMC.Transition}` instead — the unconstrained θ vectors, without
-the constrained-space mapping.
+The chain holds all `N` iterations, warm-up included; drop the warm-up with
+`chn[iter=(n_adapts + 1):N]`. Parameters are reported on their constrained
+scale, and sampler statistics such as `:acceptance_rate` and `:n_steps` are
+included as extras. Parameters are `Float64`; for a Float32 run see
+[Run a model in Float32](@ref).
 
-`progress` shows a live progress meter, defaulting to
-[`default_progress()`](@ref) (on when interactive, off in scripts and CI).
+For several chains, use AbstractMCMC's interface:
+`sample(model, spl, AbstractMCMC.MCMCThreads(), N, nchains)`.
 
-Multiple chains use the standard AbstractMCMC interface with no extra setup:
-
-    sample(rng, model, spl, MCMCThreads(), N, nchains; kwargs...)
-
-runs `nchains` independent chains and combines them into a single `SymChain`
-with a chain dimension.
+```julia
+chn = sample(model, NUTS(0.8), 2000; n_adapts=1000)
+chn = chn[iter=1001:2000]
+```
 """
 function AbstractMCMC.sample(
     rng::Random.AbstractRNG,
@@ -71,48 +68,6 @@ function AbstractMCMC.sample(
     return AbstractMCMC.bundle_samples(nt_transitions, ldm, spl, state, chain_type)
 end
 
-"""
-    sample(rng, model::Model, spl::Gibbs, N;
-           init=NamedTuple(), adtype=AutoForwardDiff(), n_adapts=0,
-           discard_initial=0, save_states=nothing, chain_type=SymChain, kwargs...)
-
-Run a [`Gibbs`](@ref) sampler on `model` for `N` sweeps and return the draws.
-
-Each sweep updates every block once (NUTS for HMC blocks, `latent_step` for
-latent-kernel blocks). By default the result is a `FlexiChains.SymChain` with
-one key per model variable. `discard_initial` drops that many leading sweeps
-(burn-in); `n_adapts` is passed to every HMC block on every sweep and, as with
-AdvancedHMC generally, should be its final target value from the first sweep on
-(see [`Gibbs`](@ref)'s step docstring). `init` supplies starting values for any
-named variables.
-
-Pass `chain_type=nothing` to get the raw `Vector` of per-sweep `NamedTuple`
-transitions instead of a chain.
-
-`progress` shows a live progress meter, defaulting to
-[`default_progress()`](@ref) (on when interactive, off in scripts and CI). It
-spans the whole run — the `discard_initial` burn-in sweeps as well as the `N`
-kept ones — since both cost the same wall-clock time to wait through.
-
-By default a variable whose value is an array (e.g. a latent state matrix) is
-retained per draw as that array. For a large latent that is fine to condition on
-but too big to keep every draw of — a discrete trajectory `X` can be megabytes
-per sweep, so thousands of sweeps materialise gigabytes in RAM — use
-`save_states` to say, per variable, where its per-sweep value should go. The
-sampler ALWAYS keeps the current value live for conditioning; `save_states` only
-changes the OUTPUT:
-
-    save_states = (X = :buffer,)          # keep live, DROP from the chain
-    save_states = (X = ("X.jld2", 100),)  # keep live, append to disk every 100 sweeps
-    save_states = (X = :chain,)           # keep in the chain (the default)
-
-Values may be `:chain`/`true` (default; retain in the chain), `:buffer`/`false`
-(omit from the chain, write nothing), or `(path, every)` (stream to disk every
-`every` sweeps, plus a final flush; omitted from the chain). Any variable not
-named keeps the default `:chain` behaviour, so scalar parameters are unaffected.
-The disk form needs a backend loaded (`using JLD2` activates the bundled sink);
-see [`write_state_chunk!`](@ref) to plug in another format.
-"""
 # Project a full sweep NamedTuple onto a statically-known subset of its keys.
 # `Val{names}` makes `names` a compile-time constant, so the returned NamedTuple's
 # type is inferred and no runtime key search happens — the per-sweep cost is a
@@ -168,6 +123,31 @@ function _flush_stream!(s::_DiskStream)
     nothing
 end
 
+"""
+    sample(rng, model::Model, spl::Gibbs, N; n_adapts=0, discard_initial=0,
+           init=NamedTuple(), adtype=AutoForwardDiff(), save_states=nothing,
+           progress=default_progress(), chain_type=SymChain)
+
+Run `N` sweeps of the [`Gibbs`](@ref) sampler `spl` after `discard_initial`
+sweeps of burn-in, and return them as a [`SymChain`](@ref).
+
+# Keywords
+- `n_adapts`: warm-up iterations for each HMC block, counted from the first
+  sweep.
+- `discard_initial`: sweeps to run and drop before the `N` kept ones.
+- `init`: starting values by name; others are drawn from the prior.
+- `adtype`: AD backend used by every HMC block.
+- `save_states`: where each variable's draws go, by name. `:chain` (the
+  default) keeps them in the chain; `:buffer` leaves them out; `(path, every)`
+  writes them to disk every `every` sweeps (needs `using JLD2`; read them back
+  with [`read_states`](@ref)).
+- `chain_type=nothing`: return a vector of `NamedTuple`s instead.
+
+```julia
+chn = sample(model, spl, 1000; n_adapts=500, discard_initial=500,
+             save_states=(z = :buffer,))
+```
+"""
 function AbstractMCMC.sample(
     rng::Random.AbstractRNG,
     model::Model,

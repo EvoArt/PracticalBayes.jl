@@ -11,8 +11,12 @@ using Distributions: Distributions
 """
     Flat()
 
-Improper flat prior over all reals: `logpdf(Flat(), x) == 0` everywhere.
-Common in PosteriorDB models expressing "no informative prior."
+Improper flat prior over the real line: `logpdf(Flat(), x) == 0` for every `x`.
+
+```jldoctest
+julia> logpdf(Flat(), 3.0)
+0.0
+```
 """
 struct Flat <: Distributions.ContinuousUnivariateDistribution end
 
@@ -24,8 +28,13 @@ Distributions.logpdf(::Flat, x::Real) = zero(x)
 """
     FlatPos(l)
 
-Improper flat prior over `(l, Inf)`: `logpdf` is `0` above `l`, `-Inf` at or
-below it.
+Improper flat prior over `(l, Inf)`: `logpdf` is `0` above `l` and `-Inf` at
+or below it.
+
+```jldoctest
+julia> logpdf(FlatPos(0.0), 2.0), logpdf(FlatPos(0.0), -1.0)
+(0.0, -Inf)
+```
 """
 struct FlatPos{T<:Real} <: Distributions.ContinuousUnivariateDistribution
     l::T
@@ -50,17 +59,28 @@ end
 """
     filldist(dist::Distribution, dim::Int, dims::Int...)
 
-`product_distribution(fill(dist, dim, dims...))` — an array of `dim x dims...`
-i.i.d. copies of `dist`, as one array-valued distribution suitable for a
-single `~` site.
+An array of `dim × dims...` independent copies of `dist`, as one array-valued
+distribution for a single `~` site. Equivalent to
+`product_distribution(fill(dist, dim, dims...))`.
+
+```jldoctest
+julia> size(rand(filldist(Normal(), 3, 2)))
+(3, 2)
+```
 """
 filldist(dist::Distributions.Distribution, dim::Int, dims::Int...) = Distributions.product_distribution(fill(dist, dim, dims...))
 
 """
     arraydist(dists::AbstractArray{<:Distribution})
 
-`product_distribution(dists)` — an array of independent (not necessarily
-identically distributed) sub-distributions as one array-valued distribution.
+An array of independent, not necessarily identical, distributions as one
+array-valued distribution. Equivalent to `product_distribution(dists)`.
+
+Use it for a `~` or `.~` site whose elements each have their own parameters:
+
+```julia
+y ~ arraydist(Normal.(X * beta, sigma))
+```
 """
 arraydist(dists::AbstractArray{<:Distributions.Distribution}) = Distributions.product_distribution(dists)
 
@@ -74,8 +94,12 @@ arraydist(dists::AbstractArray{<:Distributions.Distribution}) = Distributions.pr
 """
     LogPoisson(logλ)
 
-`Poisson` reparameterized by log-rate: `logpdf(LogPoisson(logλ), k)` for
-`k = 0, 1, 2, ...`.
+`Poisson(exp(logλ))`, parameterised by the log-rate.
+
+```jldoctest
+julia> logpdf(LogPoisson(log(3.0)), 2) ≈ logpdf(Poisson(3.0), 2)
+true
+```
 """
 struct LogPoisson{T<:Real} <: Distributions.DiscreteUnivariateDistribution
     logλ::T
@@ -94,19 +118,16 @@ end
 """
     BernoulliCLogLog(η)
 
-`Bernoulli` under the complementary log-log link: `p = 1 - exp(-exp(η))`.
+`Bernoulli(p)` with `p = 1 - exp(-exp(η))`, the complementary log-log link.
 
-The cloglog link is the standard choice for discrete-time survival / "hazard"
-data, where `η` is a log-hazard and the observation is whether an event
-occurred in the interval — it arises exactly from `P(event) = 1 - exp(-hazard)`
-for a rate `exp(η)`. That makes it the natural link for epidemic
-force-of-infection models (see e.g. the SEIC cloglog models in the badgers /
-jolly island work), which is why it is here alongside `LogPoisson` and
-`BinomialLogit` rather than left to a hand-written `@addlogprob!`.
+`η` is a log-hazard, so this is the usual likelihood for discrete-time
+survival or force-of-infection data. Computing on the `η` scale stays accurate
+for large `|η|`.
 
-Taking `η` directly (rather than `Bernoulli(1 - exp(-exp(η)))`) keeps the
-whole computation on the log-hazard scale, which is both better conditioned
-for large `|η|` and what `GradMode`'s closed-form gradient recognizes.
+```jldoctest
+julia> logpdf(BernoulliCLogLog(0.0), 1) ≈ log(1 - exp(-1))
+true
+```
 """
 struct BernoulliCLogLog{T<:Real} <: Distributions.DiscreteUnivariateDistribution
     η::T
@@ -128,7 +149,13 @@ end
 """
     BinomialLogit(n, logitp)
 
-`Binomial` reparameterized by the logit of the success probability.
+`Binomial(n, logistic(logitp))`, parameterised by the logit of the success
+probability.
+
+```jldoctest
+julia> logpdf(BinomialLogit(10, 0.0), 5) ≈ logpdf(Binomial(10, 0.5), 5)
+true
+```
 """
 struct BinomialLogit{T<:Real} <: Distributions.DiscreteUnivariateDistribution
     n::Int

@@ -1,11 +1,12 @@
 """
     AbstractEvalMode
 
-Every `@model`-generated evaluator takes an `AbstractEvalMode` as its first
-argument after `self`. All role decisions (assume vs observe, where a value
-comes from) dispatch on the *type* of the mode plus `Val{name}`, so that for a
-concrete mode type the tilde branch compiles away entirely — there is no
-runtime context-stack walk like DynamicPPL's `AbstractContext` chain.
+Supertype of the evaluation modes. A mode decides, at each `~` statement, where
+a parameter's value comes from and what is recorded. Inside a model body the
+current mode is `__mode__`.
+
+Subtypes: [`TraceMode`](@ref), [`EvalMode`](@ref), [`PriorMode`](@ref),
+[`FixedMode`](@ref), [`PointwiseMode`](@ref). See [Evaluation modes](@ref).
 """
 abstract type AbstractEvalMode end
 
@@ -32,22 +33,21 @@ end
 """
     paramtype(mode) -> Type{<:Real}
 
-The numeric type this mode is currently evaluating in — `eltype(mode.θ)` for
-`EvalMode` (so it tracks whatever `θ`'s element type is: `Float64`,
-`Float32`, or a `ForwardDiff.Dual`/other AD-backend number type mid-gradient),
-`Float64` for the other three modes (never differentiated).
+The number type parameters currently have: the element type of the parameter
+vector under [`EvalMode`](@ref) (`Float64`, `Float32`, or an AD number type
+during a gradient), and `Float64` in every other mode.
 
-Model authors need this whenever a model pre-declares a container for an
-indexed family (`x[i] ~ dist`): `x = Vector{Float64}(undef, n)` looks
-harmless but is a real bug under any AD backend, since the container then
-can't hold the `Dual` (or other AD-backend) numbers a gradient call needs to
-write into it — this crashes with a `MethodError`/`InexactError` inside
-`_assume_index`, not silently. Write `x = Vector{paramtype(__mode__)}(undef, n)`
-instead (the same fix DynamicPPL's `@model` uses internally, via a
-`::Type{T}=Float64` model argument it rewrites per call — `paramtype` is the
-simpler equivalent this package's simpler compiler can offer directly,
-reading the type straight off the mode rather than rewriting model arguments
-at construction time).
+Use it inside a model body, as `paramtype(__mode__)`, wherever the model
+creates an array that will hold parameter values or that sets the precision of
+a prior:
+
+```julia
+x = Vector{paramtype(__mode__)}(undef, n)      # container for x[i] ~ ...
+beta ~ MvNormal(zeros(paramtype(__mode__), k), I)
+```
+
+A `Vector{Float64}` container fails under AD, and a `zeros(k)` mean turns a
+Float32 run into Float64.
 """
 @inline paramtype(::AbstractEvalMode) = Float64  # overridden for EvalMode below, once it's defined
 
@@ -60,8 +60,8 @@ at construction time).
 """
     TraceMode(rng, conditioned, init)
 
-Discovery-phase evaluation mode. Running a model once under `TraceMode`
-produces the ordered list of `SiteRecord`s consumed by `build_layout`.
+Mode that runs a model once to find its variables, drawing each parameter from
+`init` if given and otherwise from its prior. [`build_layout`](@ref) uses it.
 """
 mutable struct TraceMode{R<:AbstractRNG,TCond<:NamedTuple,TInit<:NamedTuple} <: AbstractEvalMode
     rng::R
@@ -86,9 +86,10 @@ TraceMode(rng, conditioned, init) = TraceMode(rng, conditioned, init, Any[])
 """
     EvalMode(layout, θ, store, conditioned)
 
-Type-stable hot-path evaluation mode. `layout.slots` is a NamedTuple of
-isbits slot descriptors so `getproperty(layout.slots, s)` dispatches on a
-concrete type per variable and the assume/observe/latent branch compiles away.
+Mode used for log-density and gradient evaluation. Parameters in the flat
+vector are read from `θ` (unconstrained, with the log-Jacobian added) as laid
+out by `layout`; the rest are read from `store` and held constant.
+[`LogDensityFunction`](@ref) uses it.
 """
 struct EvalMode{L,V<:AbstractVector,S<:NamedTuple,TCond<:NamedTuple} <: AbstractEvalMode
     layout::L    # a Layout (layout.jl) — tells each tilde site where to find its value
@@ -119,16 +120,10 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    PriorMode{R<:AbstractRNG,TCond<:NamedTuple} <: AbstractEvalMode
+    PriorMode(rng, conditioned)
 
-Evaluation mode backing `rand(model)`/`rand(model, n)`: every assumed site is
-drawn from its prior distribution (ignoring any conditioned value), and every
-site's value (assumed and observed) is recorded into `values[]` as the model
-runs, giving a full prior-predictive draw once evaluation completes.
-
-Deliberately not type-stable (`values[]`'s NamedTuple type grows one field per
-site) — an accepted tradeoff since `rand(model)` runs the model exactly once
-per call, unlike [`EvalMode`](@ref)'s hot HMC path.
+Mode that draws every parameter from its prior and records every variable's
+value. `rand(model)` uses it.
 """
 mutable struct PriorMode{R<:AbstractRNG,TCond<:NamedTuple} <: AbstractEvalMode
     rng::R
@@ -153,26 +148,12 @@ PriorMode(rng, conditioned) = PriorMode(rng, conditioned, Ref{NamedTuple}(NamedT
 # ---------------------------------------------------------------------------
 
 """
-    FixedMode{R<:AbstractRNG,TVals<:NamedTuple,TCond<:NamedTuple} <: AbstractEvalMode
+    FixedMode(rng, fixed, conditioned; predict=false)
 
-Evaluation mode that reads every assumed site from a fixed `NamedTuple` of
-values (`fixed`, e.g. one posterior draw) rather than sampling from a prior or
-reading from a flat `θ` vector. Backs [`returned`](@ref), the `Model`-level
-[`logjoint`](@ref)/[`logprior`](@ref)/[`loglikelihood_at`](@ref), and
-[`predict`](@ref) (via the `predict` flag below) — see each function's own
-docstring for the user-facing entry point; this struct is the shared mode they
-all evaluate the model under.
-
-Fields:
-- `fixed`: the point to evaluate assumed sites at.
-- `conditioned`: the model's own conditioned data (as for any other mode).
-- `predict`: if `true`, observe sites with no data attached (neither in
-  `conditioned` nor as a model argument) are *sampled* from the likelihood
-  instead of erroring — this is what makes `predict` distinct from
-  `logjoint`/`returned`, which require every observe site to resolve to real
-  data or fail loudly.
-- `values`: accumulates every site's value (assumed and observed) as the model
-  runs, so callers can read back a full draw afterwards.
+Mode that reads every parameter from the `NamedTuple` `fixed`, such as one
+posterior draw. With `predict=true`, observed variables that have no data are
+drawn from the likelihood; otherwise every observed variable needs data.
+[`logjoint`](@ref), [`returned`](@ref) and [`predict`](@ref) use it.
 """
 mutable struct FixedMode{R<:AbstractRNG,TVals<:NamedTuple,TCond<:NamedTuple} <: AbstractEvalMode
     rng::R
@@ -196,30 +177,11 @@ FixedMode(rng, fixed, conditioned; predict=false) =
     FixedMode(rng, fixed, conditioned, predict, Ref{NamedTuple}(NamedTuple()))
 
 """
-    PointwiseMode{TVals<:NamedTuple,TCond<:NamedTuple} <: AbstractEvalMode
+    PointwiseMode(fixed, conditioned)
 
-Evaluation mode backing [`pointwise_loglikelihoods`](@ref) (LOO-CV/WAIC-style
-model comparison, e.g. via ParetoSmooth.jl/ArviZ). Reads every assumed site
-from a fixed `NamedTuple` of values exactly like [`FixedMode`](@ref) with
-`predict=false` — same "every observe site must resolve to real data or
-error" contract — but instead of only summing observe-site log-densities into
-`Accum`, it ALSO records each site's PER-OBSERVATION `logpdf` values into
-`pointwise[]`, keyed by site name.
-
-This is a genuinely separate mode (not a `FixedMode` flag) because computing
-per-observation values requires `logpdf.(dist, y)` at every `.~` site — the
-opposite of the hot `EvalMode` path's whole optimization, which uses the
-allocation-free summed `Distributions.loglikelihood(dist, y)` specifically to
-avoid ever materializing that per-observation array (see tilde.jl's own
-`_dot_loglik` docstring). Keeping this as its own mode means the hot HMC path
-is completely untouched — this is a strictly opt-in, post-hoc re-evaluation,
-never run during sampling.
-
-Fields:
-- `fixed`: the point to evaluate assumed sites at (e.g. one posterior draw).
-- `conditioned`: the model's own conditioned data (as for any other mode).
-- `pointwise`: accumulates each observe site's `Vector` of per-observation
-  `logpdf` values, keyed by site name.
+Mode that reads every parameter from `fixed`, like [`FixedMode`](@ref), and
+records each observation's log-likelihood separately.
+[`pointwise_loglikelihoods`](@ref) uses it.
 """
 mutable struct PointwiseMode{TVals<:NamedTuple,TCond<:NamedTuple} <: AbstractEvalMode
     fixed::TVals

@@ -9,35 +9,26 @@
 """
     AbstractLatentKernel
 
-Supertype for user-defined Gibbs latent-block samplers. A subtype `K` must
-implement `latent_step(rng, kernel::K, block_names, c::ModelConditional)`
-(see its docstring). `Gibbs` (gibbs.jl) never differentiates through a
-latent kernel and calls it exactly once per outer sweep — never from inside
-a NUTS leapfrog/tree-doubling step — so a kernel is free to do arbitrary,
-non-differentiable work (discrete sampling, matrix factorizations, calling
-back into `rand`, etc).
+Supertype for samplers you write yourself for a block of a [`Gibbs`](@ref)
+sampler. A subtype must implement [`latent_step`](@ref).
 
-If a kernel's own struct carries mutable internal state (e.g. an adaptive
-proposal's running acceptance count), ensure that state is safe to `deepcopy`:
-`MCMCThreads` isolates chains by deep-copying the sampler.
+[`Gibbs`](@ref) calls the kernel once per sweep and never differentiates
+through it, so a kernel may use any code: discrete draws, exact
+forward-filtering backward-sampling, Metropolis proposals.
+
+Mutable state inside a kernel must survive `deepcopy`, which `MCMCThreads`
+uses to give each chain its own sampler.
 """
 abstract type AbstractLatentKernel end
 
 """
     ModelConditional(model, values)
 
-Passed to `latent_step`. `values` is a NamedTuple holding the current
-(constrained-space) value of every assumed model variable — i.e. everything
-needed to evaluate this block's conditional distribution given the rest of the
-model. This INCLUDES this block's own current value (it's built from the full
-merged state before the current block is resampled), so a
-Metropolis-within-Gibbs kernel that needs its own previous value (e.g. a
-move-events / occult-infection proposal) can read it from `c.values` directly;
-an exact-conditional kernel (FFBS, conjugate Gibbs) simply ignores its own
-entry and reads only the OTHER blocks' values it conditions on. Data isn't
-duplicated into `values`: read it directly off `c.model.args` (the model's own
-call arguments) or `c.model.conditioned`, exactly as you would from inside the
-`@model` body itself.
+The state a [`latent_step`](@ref) call conditions on.
+
+- `c.values`: the current value of every parameter, including the block's own.
+- `c.model.args`: the model's arguments, which hold the data.
+- `c.model.conditioned`: data bound with [`condition`](@ref).
 """
 struct ModelConditional{M<:Model,V<:NamedTuple}
     model::M
@@ -47,18 +38,14 @@ end
 """
     logjoint(c::ModelConditional; overrides...) -> Real
 
-Convenience oracle: evaluates the model's full log-joint density at
-`merge(c.values, NamedTuple(overrides))` (via `FixedMode` — the same
-machinery `logprior`/`loglikelihood`/`returned` use to evaluate a model at a
-fixed point). `overrides` lets a kernel probe the joint density at trial
-values without mutating `c.values` itself, e.g. for a generic
-Metropolis-within-Gibbs kernel that isn't an exact conjugate/FFBS update.
+The model's log joint density at the current values, with any parameters given
+as keywords replaced. A Metropolis kernel can use it to score a proposal:
 
-Most exact-conditional kernels (FFBS, conjugate Gibbs updates) will NOT call
-this — they compute their closed-form conditional directly from `c.values`
-and the model's data, which is both simpler and avoids re-evaluating the
-whole model just to get one block's conditional. `logjoint` exists for the
-generic case where no closed form is available.
+```julia
+lp_new = logjoint(c; z = z_proposed)
+```
+
+It runs the whole model, so an exact update is usually faster.
 """
 function logjoint(c::ModelConditional; overrides...)
     nt = merge(c.values, NamedTuple(overrides))
@@ -71,63 +58,47 @@ end
     latent_step(rng, kernel::AbstractLatentKernel, block_names::Tuple{Vararg{Symbol}},
                 c::ModelConditional) -> NamedTuple
 
-User-implemented. Must return a `NamedTuple` with EXACTLY the keys in
-`block_names`, holding the new constrained-space draw for each. Called
-ONCE per Gibbs sweep by `Gibbs`'s sampling loop (gibbs.jl) — never inside a
-gradient call, never mid-leapfrog-step — so `latent_step` is free to use
-plain `Float64`/`Int` arithmetic throughout; nothing here is ever
-differentiated or promoted to a `Dual`.
+Draw new values for the block `block_names` given the rest of the state in
+`c` (a [`ModelConditional`](@ref)). Implement this for your
+[`AbstractLatentKernel`](@ref) subtype.
 
-# Example: a hand-written forward-filter/backward-sample (FFBS) kernel for a
-# 2-state Gaussian HMM's discrete state sequence `z`
+Return a `NamedTuple` with exactly the keys in `block_names`. Each value must
+have the same type as the variable's starting value, e.g. `Bool` for a
+`Bernoulli` variable and `Int` for a `Categorical` one.
+
+The call happens once per Gibbs sweep, outside any gradient computation, so the
+values in `c` are plain numbers.
+
+# Example
+
+A two-component mixture whose allocations `z` are drawn exactly given `p` and
+`μ`:
 
 ```julia
-using Distributions, StatsFuns, PracticalBayes
-
-@model function hmm(y)
-    p_stay ~ Beta(8, 2)
-    sigma ~ Exponential(1)
-    N = length(y)
-    z = Vector{Int}(undef, N)   # discrete latent container — plain Int is fine,
-                                # NEVER touched by AD (see `paramtype` docstring:
-                                # only CONTINUOUS assumed containers need it)
-    z[1] ~ Categorical([0.5, 0.5])
-    for t in 2:N
-        z[t] ~ Categorical(z[t - 1] == 1 ? [p_stay, 1 - p_stay] : [1 - p_stay, p_stay])
+@model function mixture(y)
+    p ~ Beta(1, 1)
+    μ ~ Normal(0, 5)
+    z = Vector{Bool}(undef, length(y))
+    for i in eachindex(y)
+        z[i] ~ Bernoulli(p)
     end
-    for t in 1:N
-        y[t] ~ Normal(z[t] == 1 ? 0.0 : 5.0, sigma)
-    end
+    y .~ Normal.(ifelse.(z, μ, 0.0), 1.0)
 end
 
-struct FFBS <: AbstractLatentKernel end
+struct AllocationKernel <: AbstractLatentKernel end
 
-function PracticalBayes.latent_step(rng, ::FFBS, block_names, c::ModelConditional)
-    block_names == (:z,) || error("this FFBS kernel only handles the `:z` block")
-    y = c.model.args.y
-    p_stay, sigma = c.values.p_stay, c.values.sigma
-    N = length(y)
-    P = [p_stay 1-p_stay; 1-p_stay p_stay]
-    means = (0.0, 5.0)
-
-    # forward filter
-    logα = Matrix{Float64}(undef, 2, N)
-    logα[:, 1] .= log(0.5) .+ logpdf.(Normal.(means, sigma), y[1])
-    for t in 2:N, j in 1:2
-        logα[j, t] = logsumexp(logα[:, t - 1] .+ log.(P[:, j])) + logpdf(Normal(means[j], sigma), y[t])
+function PracticalBayes.latent_step(rng, ::AllocationKernel, block_names, c::ModelConditional)
+    y, p, μ = c.model.args.y, c.values.p, c.values.μ
+    z = map(y) do yi
+        l1 = log(p) + logpdf(Normal(μ, 1), yi)
+        l0 = log1p(-p) + logpdf(Normal(0, 1), yi)
+        rand(rng) < 1 / (1 + exp(l0 - l1))
     end
-
-    # backward sample
-    z = Vector{Int}(undef, N)
-    z[N] = rand(rng, Categorical(softmax(logα[:, N])))
-    for t in (N - 1):-1:1
-        w = softmax(logα[:, t] .+ log.(P[:, z[t + 1]]))
-        z[t] = rand(rng, Categorical(w))
-    end
-    return (; z=z)
+    return (; z = z)
 end
 
-chain = ...  # Gibbs(:p_stay => NUTS(0.8), :sigma => NUTS(0.8), :z => FFBS())
+spl = Gibbs(:p => NUTS(0.8), :μ => NUTS(0.8), :z => AllocationKernel())
+chn = sample(mixture(y), spl, 1000; n_adapts=500, discard_initial=500)
 ```
 """
 function latent_step end

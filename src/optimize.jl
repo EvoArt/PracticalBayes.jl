@@ -24,14 +24,12 @@ import DifferentiationInterface as DI
 """
     PointEstimate
 
-Result of `maximum_a_posteriori`/`maximum_likelihood`. `theta` is the
-optimum in unconstrained space; `constrained` is `invlink(layout, theta)`
-(with untracked sites included, since a point estimate is small enough that
-there's no reason to hide any of it); `value` is the maximized objective
-(logjoint for MAP, loglikelihood for MLE) at `theta`. `layout`/`store` are
-carried along so the result can be fed straight into a fresh
-`LogDensityFunction` for diagnostics, or into `laplace_approximation`
-without rebuilding anything.
+The result of [`maximum_a_posteriori`](@ref) or [`maximum_likelihood`](@ref).
+
+Fields: `constrained` (the estimate by name, on the parameters' own scale),
+`theta` (the same point as the unconstrained vector), `value` (the log joint
+or log-likelihood there), `retcode` (the optimiser's return code), and the
+`layout` and `store` it was computed with.
 """
 struct PointEstimate{T<:Real,V<:AbstractVector{T},L<:Layout,S<:NamedTuple,C<:NamedTuple}
     theta::V
@@ -45,12 +43,10 @@ end
 """
     LaplaceApproximation
 
-A Gaussian approximation to the posterior, centered at a MAP estimate with
-covariance `-inv(H)` where `H` is the Hessian of the joint log-density at
-that point (both in UNCONSTRAINED space — the space where a Gaussian
-approximation is actually reasonable; see `laplace_mvnormal` if you want a
-`Distributions.MvNormal` built from this directly). `map` is the full
-`PointEstimate` the approximation is built around.
+A normal approximation to the posterior on the unconstrained scale, from
+[`laplace_approximation`](@ref). Fields: `map` (the [`PointEstimate`](@ref) it
+is centred on), `hessian` of the log joint there, and `covariance`, which is
+`-inv(hessian)`.
 """
 struct LaplaceApproximation{T<:Real,M<:AbstractMatrix{T},PE<:PointEstimate{T}}
     covariance::M
@@ -59,13 +55,12 @@ struct LaplaceApproximation{T<:Real,M<:AbstractMatrix{T},PE<:PointEstimate{T}}
 end
 
 """
-    laplace_mvnormal(la::LaplaceApproximation) -> Distributions.MvNormal
+    laplace_mvnormal(la::LaplaceApproximation) -> MvNormal
 
-Convenience constructor for the unconstrained-space Gaussian approximation
-`la` represents. Throws (via `Distributions.MvNormal`) if `la.covariance`
-isn't positive-definite — a sign the MAP optimization didn't actually find a
-local maximum (or the model is improper at that point), not a bug in this
-function.
+`la` as an `MvNormal` over the unconstrained vector `θ`. Throws if the
+covariance is not positive definite, which usually means the optimiser did not
+reach a maximum. Map draws back to named values with
+`invlink(la.map.layout, θ)`.
 """
 laplace_mvnormal(la::LaplaceApproximation) = MvNormal(la.map.theta, Symmetric(la.covariance))
 
@@ -138,21 +133,24 @@ function _optimize_point(objective_call, model, layout, store, θ0::AbstractVect
 end
 
 """
-    maximum_a_posteriori(model, optimizer; store=NamedTuple(), untracked=(), rng=Random.default_rng(),
-                          init=NamedTuple(), adtype=ADTypes.AutoForwardDiff(), kwargs...) -> PointEstimate
+    maximum_a_posteriori(model, optimizer; init=NamedTuple(), store=NamedTuple(),
+                         adtype=AutoForwardDiff(), kwargs...) -> PointEstimate
 
-Maximizes the joint log-density (`logprior + loglikelihood`) over the
-model's unconstrained parameters — this is exactly `LogDensityFunction`'s
-existing objective, so the only new code here is the optimizer call.
+Find the posterior mode of `model`, optimising over the unconstrained
+parameters. Needs `using Optimization` and a solver package; `optimizer` is a
+solver such as `OptimizationOptimJL.LBFGS()`.
 
-Requires `using Optimization` plus a solver package (e.g.
-`OptimizationOptimJL`); `optimizer` is an Optimization.jl algorithm object,
-e.g. `OptimizationOptimJL.BFGS()`.
+# Keywords
+- `init`: starting values by name.
+- `store`: values, by name, of parameters to hold fixed.
+- `adtype`: AD backend for the gradient.
+- Other keywords go to `Optimization.solve`.
 
-- `store`: fixed values for any names that should be held constant during
-  optimization (e.g. nuisance latents) instead of optimized over — same role
-  as `build_layout`'s `values=`.
-- `kwargs...`: forwarded to `Optimization.solve`.
+```julia
+using Optimization, OptimizationOptimJL
+est = maximum_a_posteriori(model, LBFGS())
+est.constrained
+```
 """
 function maximum_a_posteriori(
     model,
@@ -171,19 +169,10 @@ function maximum_a_posteriori(
 end
 
 """
-    maximum_likelihood(model, optimizer; store=NamedTuple(), untracked=(), rng=Random.default_rng(),
-                        init=NamedTuple(), adtype=ADTypes.AutoForwardDiff(), kwargs...) -> PointEstimate
+    maximum_likelihood(model, optimizer; kwargs...) -> PointEstimate
 
-Maximizes the likelihood term ONLY (`loglikelihood_(acc)`, ignoring
-`logprior`) over the model's unconstrained parameters — i.e. the classical
-MLE, as opposed to `maximum_a_posteriori`'s MAP. Every other argument has the
-same meaning as `maximum_a_posteriori`.
-
-Priors are still evaluated during tracing (`build_layout` needs a concrete
-initial value for every site) but never contribute to the optimized
-objective or its gradient — `Accum`'s prior/likelihood split
-(accumulator.jl) is what makes this a one-line change from the MAP path
-(`_loglikelihood_call` vs `_logdensity_call`, both logdensity.jl).
+Like [`maximum_a_posteriori`](@ref), but maximise the log-likelihood alone,
+ignoring the priors.
 """
 function maximum_likelihood(
     model,
@@ -202,16 +191,11 @@ function maximum_likelihood(
 end
 
 """
-    laplace_approximation(model, optimizer; store=NamedTuple(), untracked=(), rng=Random.default_rng(),
-                           init=NamedTuple(), adtype=ADTypes.AutoForwardDiff(), kwargs...) -> LaplaceApproximation
+    laplace_approximation(model, optimizer; kwargs...) -> LaplaceApproximation
 
-Finds the MAP estimate (via `maximum_a_posteriori`, same arguments) and then
-computes the Hessian of the joint log-density there via `DI.hessian` — the
-same `DifferentiationInterface` machinery `LogDensityFunction` uses for
-gradients, just one order higher. The covariance of the Gaussian
-approximation is `-inv(H)`, in the SAME unconstrained space `theta` lives in
-(not the constrained/reported space — a Gaussian approximation on a
-bounded/positive parameter's raw scale usually isn't meaningful).
+Find the posterior mode with [`maximum_a_posteriori`](@ref) (same arguments)
+and fit a normal approximation there, with covariance minus the inverse
+Hessian of the log joint. The approximation is on the unconstrained scale.
 """
 function laplace_approximation(
     model,

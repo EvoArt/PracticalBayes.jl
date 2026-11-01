@@ -10,14 +10,12 @@ using Random: Random
     rand([rng,] model::Model) -> NamedTuple
     rand([rng,] model::Model, n::Integer) -> Vector{NamedTuple}
 
-Draw one (or `n` independent) sample(s) from `model`'s prior/prior-predictive
-distribution: every assumed site is drawn fresh from its prior; every observe
-site uses real data if `model` has any bound (via arguments or conditioning),
-otherwise is drawn from the likelihood. Returns a `NamedTuple` mapping every
-site name (assumed AND observed) to its value — this is `PriorMode`'s own
-`values` accumulator (see modes.jl), not filtered down to just the
-parameters, since a common use is generating synthetic `(params..., data...)`
-datasets for the model itself.
+Draw from the prior predictive distribution. Parameters are drawn from their
+priors; an observed variable keeps its data if it has any and is drawn from the
+likelihood otherwise. Returns every variable, parameters and observations.
+
+To simulate a dataset, pass `missing` (or `fill(missing, n)` for a `.~`
+statement) for the data argument.
 """
 function Random.rand(rng::Random.AbstractRNG, m::Model)
     mode = PriorMode(rng, m.conditioned)
@@ -41,27 +39,40 @@ end
 
 """
     logjoint(model::Model, nt::NamedTuple) -> Real
-    logprior(model::Model, nt::NamedTuple) -> Real
-    loglikelihood(model::Model, nt::NamedTuple) -> Real
 
-Evaluate the model's log-joint/log-prior/log-likelihood at a fixed point
-`nt` (a NamedTuple of parameter values, e.g. one posterior draw). Every
-observe site must resolve to real data (via `model`'s own arguments or
-conditioning) — there is no `predict=true` escape hatch here, since a
-log-density with a missing observation term isn't a well-defined number.
+The log joint density of `model` with its parameters set to `nt`, for example
+one posterior draw. Every observed variable must have data.
 
-These share their names with the `Accum`-level accessors in accumulator.jl
-(`logjoint(acc::Accum)`, etc.) — Julia's multiple dispatch picks the right
-method from the argument types, so both are always available un-qualified.
+```jldoctest
+julia> @model function demo(y)
+           μ ~ Normal(0, 1)
+           y ~ Normal(μ, 1)
+       end;
+
+julia> logjoint(demo(0.5), (; μ = 0.0)) ≈ logpdf(Normal(), 0.0) + logpdf(Normal(), 0.5)
+true
+```
 """
 function logjoint(m::Model, nt::NamedTuple; rng=Random.default_rng())
     _, acc, _ = _fixed_evaluate(rng, m, nt; predict=false)
     return logjoint(acc)
 end
+"""
+    logprior(model::Model, nt::NamedTuple) -> Real
+
+The log prior density of `model` with its parameters set to `nt`.
+"""
 function logprior(m::Model, nt::NamedTuple; rng=Random.default_rng())
     _, acc, _ = _fixed_evaluate(rng, m, nt; predict=false)
     return logprior(acc)
 end
+"""
+    loglikelihood_at(model::Model, nt::NamedTuple) -> Real
+
+The log-likelihood of `model`'s data with its parameters set to `nt`. Every
+observed variable must have data. For one value per observation, use
+[`pointwise_loglikelihoods`](@ref).
+"""
 function loglikelihood_at(m::Model, nt::NamedTuple; rng=Random.default_rng())
     _, acc, _ = _fixed_evaluate(rng, m, nt; predict=false)
     return loglikelihood_(acc)
@@ -70,10 +81,19 @@ end
 """
     returned(model::Model, nt::NamedTuple; rng=Random.default_rng())
 
-Runs `model` with every assumed site fixed to `nt`'s values (same
-`FixedMode`/`predict=false` semantics as `logjoint`) and returns the model
-function's own return value — whatever the `@model` body's last expression
-evaluates to (a `:=`-computed summary statistic, e.g.), not the log-density.
+Run `model` with its parameters set to `nt` and return the value of the model
+body's `return` statement (`nothing` if it has none). Use it to compute derived
+quantities at each posterior draw.
+
+```jldoctest
+julia> @model function demo()
+           m̃ ~ Normal(0, 1)
+           return m̃ + 1
+       end;
+
+julia> returned(demo(), (; m̃ = 2.0))
+3.0
+```
 """
 function returned(m::Model, nt::NamedTuple; rng=Random.default_rng())
     retval, _, _ = _fixed_evaluate(rng, m, nt; predict=false)
@@ -83,27 +103,20 @@ end
 """
     predict([rng,] model::Model, draws) -> Vector{NamedTuple}
 
-Posterior-predictive sampling: for each parameter draw in `draws` (any
-iterable of `NamedTuple`s, e.g. the output of `rand(model, n)`, or built by
-hand from a `FlexiChains.SymChain` — see below), fixes the model's assumed
-sites to that draw's values and samples every un-conditioned observe site
-fresh from the likelihood (`FixedMode(...; predict=true)`). `model` is
-typically NOT the same model instance used for inference — pass one with the
-observed argument(s) replaced by an array of `missing` at the desired output
-shape (the standard convention; see `.~`'s predictive-sampling support in
-tilde.jl for why the array must carry shape, not a bare `missing`), e.g.:
+Posterior predictive sampling. For each `NamedTuple` in `draws` (see
+[`chain_draws`](@ref)), set the parameters to that draw and draw every observed
+variable that has no data from the likelihood.
+
+Pass `model` with the data argument replaced by missing values. For a `.~`
+statement give the output shape, `fill(missing, n)`; a bare `missing` works
+only for `~`.
+
+Returns one `NamedTuple` per draw holding every variable.
 
 ```julia
-m_train = regression(x_train, y_train)
-# ... run `sample` on m_train, get a `chn::SymChain` ...
-m_test = regression(x_test, fill(missing, length(x_test)))
-draws = chain_draws(chn)  # see below
-preds = predict(m_test, draws)
+chn = sample(linreg(x, y), NUTS(0.8), 1000)
+preds = predict(linreg(x_new, fill(missing, length(x_new))), chain_draws(chn))
 ```
-
-Returns a `Vector{NamedTuple}`, one per input draw, containing every site's
-value (fixed parameters AND freshly-sampled observations) — same shape as
-`rand`'s output.
 """
 function predict(rng::Random.AbstractRNG, m::Model, draws)
     return [_fixed_evaluate(rng, m, nt; predict=true)[3] for nt in draws]
@@ -113,13 +126,10 @@ predict(m::Model, draws) = predict(Random.default_rng(), m, draws)
 """
     chain_draws(chn::FlexiChains.SymChain) -> Vector{NamedTuple}
 
-Flattens every (iteration, chain) draw in `chn` into one `Vector{NamedTuple}`
-(all chains pooled together, in chain-major then iteration order), suitable
-as the `draws` argument to `predict`/`returned`/`logjoint` etc. Only
-`Parameter` keys are included (AdvancedHMC's diagnostic `Extra` keys, e.g.
-`acceptance_rate`, are dropped) — a model's `FixedMode` only ever reads
-fields it recognizes by name, so including the extras would be harmless but
-pointless; this keeps each NamedTuple exactly the shape a model expects.
+Every draw in `chn` as a `NamedTuple` of parameter values, all chains pooled
+(chain by chain). Sampler statistics are left out. The result is the `draws`
+argument [`predict`](@ref) expects, and each element can be passed to
+[`logjoint`](@ref), [`returned`](@ref) or [`pointwise_loglikelihoods`](@ref).
 """
 function chain_draws(chn::FlexiChains.SymChain)
     param_names = FlexiChains.parameters(chn)
@@ -137,36 +147,17 @@ end
     param_draws(chn::FlexiChains.SymChain, name::Symbol) -> Matrix
     param_draws(chn::FlexiChains.SymChain, name::Symbol, i) -> Matrix
 
-Posterior draws for one parameter as a plain `(draws × chains)` matrix of
-scalars. With `i`, the draws for element `i` of a vector-valued parameter.
+The draws of one parameter as a plain `(draws × chains)` `Matrix`. For a
+vector-valued parameter, pass the element index `i`.
 
-This exists because FlexiChains keeps a vector parameter as ONE entry whose
-elements are the whole vector, rather than flattening it into `beta[1]`,
-`beta[2]`, ... columns the way MCMCChains does:
-
-```julia
-b = chn[:beta]      # (draws × chains) matrix, eltype Vector{Float64}
-b[:, 2]             # BoundsError -- 2 indexes the CHAIN, and there is one
-```
-
-Getting one element's draws means indexing the draw first and the element
-second (`[b[i,c][2] for i in 1:size(b,1)]`), which is easy to get wrong and is
-the most common trap when porting code that expects MCMCChains' layout.
-
-A second trap sits behind it: writing that comprehension over `axes(b, 1)` —
-the more idiomatic-looking spelling — returns a `DimArray`, because a chain's
-axes are dimensional. Slices of it carry their lookup values and then refuse to
-broadcast against each other (`Lookup values for Dim{:iter} ... do not match`),
-so the failure surfaces wherever the draws are eventually used rather than
-where they were built. So:
+A vector parameter is one chain entry whose values are whole vectors, so
+`chn[:beta][:, 2]` indexes the second chain, not `beta[2]`. Use this function
+instead:
 
 ```julia
 param_draws(chn, :beta, 2)     # every draw of beta[2], all chains
-param_draws(chn, :sigma)       # a scalar parameter needs no index
+param_draws(chn, :sigma)       # a scalar parameter
 ```
-
-Returns a plain `Matrix` rather than a `DimArray`, so the result drops straight
-into `mean`/`std`/`quantile`, broadcasts, and plotting code.
 """
 function param_draws(chn::FlexiChains.SymChain, name::Symbol)
     b = chn[name]
@@ -197,33 +188,20 @@ end
     pointwise_loglikelihoods(model::Model, nt::NamedTuple; flatten=false)
         -> NamedTuple or Vector{Float64}
 
-Per-observation log-likelihood at a fixed point `nt` (e.g. one posterior
-draw) — the building block for LOO-CV/WAIC-style model comparison (e.g. via
-ParetoSmooth.jl or exporting to ArviZ), which need one log-likelihood value
-per observation rather than `loglikelihood_at`'s single summed scalar. Same
-"every observe site must resolve to real data" contract as
-[`logjoint`](@ref)/`loglikelihood_at` — there is no `predict=true` form of
-this, since a per-observation likelihood term is meaningless without a real
-observation to score it against.
+The log-likelihood of each observation with the parameters set to `nt`, as
+needed for PSIS-LOO or WAIC. Every observed variable must have data.
 
-By default (`flatten=false`) returns a `NamedTuple` mapping each observe
-site's name to its own `Vector` of per-observation values, preserving site
-identity for models with more than one observe block. Pass `flatten=true` to
-get everything concatenated into a single `Vector{Float64}` (in the order
-sites were visited during evaluation), which is the shape most LOO-CV/WAIC
-tooling expects directly.
+Returns a `NamedTuple` with one vector per observed variable, or, with
+`flatten=true`, one vector of all values in the order the model visits them.
 
-This is a genuinely separate, opt-in re-evaluation of the model — it does
-NOT reuse any state from sampling — because computing per-observation values
-requires `logpdf.(dist, y)` at every `.~` site, which is deliberately NOT
-what the hot HMC path computes (see `PointwiseMode`'s own docstring for
-why). Expect to call this once per posterior draw you want pointwise values
-for, not inside any performance-sensitive loop.
+```jldoctest
+julia> @model function demo(y)
+           μ ~ Normal(0, 1)
+           y .~ Normal(μ, 1)
+       end;
 
-```julia
-draws = chain_draws(chn)
-pw = [pointwise_loglikelihoods(model, nt) for nt in draws]  # one NamedTuple per draw
-loo_matrix = reduce(hcat, pointwise_loglikelihoods(model, nt; flatten=true) for nt in draws)  # n_obs × n_draws
+julia> pointwise_loglikelihoods(demo([0.0, 1.0]), (; μ = 0.0)).y ≈ logpdf.(Normal(), [0.0, 1.0])
+true
 ```
 """
 function pointwise_loglikelihoods(m::Model, nt::NamedTuple; flatten::Bool=false)

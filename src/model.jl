@@ -1,16 +1,14 @@
 """
-    Model{F,TArgs<:NamedTuple,TCond<:NamedTuple} <: AbstractPPL.AbstractProbabilisticProgram
+    Model
 
-`f`: the generated evaluator, called as `f(mode, acc, args...)`.
-`args`: the model-call arguments as a NamedTuple (values may be `missing` to
-mark a parameter passed positionally, Turing-style).
-`conditioned`: extra data bound via `model | (; y = ...)`, merged in on top of
-`args` at each tilde site (see `getcond` in modes.jl).
+A model with its arguments bound, as returned by calling a function defined
+with [`@model`](@ref).
 
-The *role* of a top-level name (observed vs assumed) is determined by
-whether it is a key of `args` (with a non-`missing`/non-`nothing` value) or
-of `conditioned` — entirely in the type domain, so re-specializing on a new
-conditioning pattern is ordinary Julia dispatch, not a runtime branch.
+Fields:
+- `f`: the evaluator the macro generated.
+- `args`: the call's arguments as a `NamedTuple`. An argument holding
+  `missing` is a parameter, not data.
+- `conditioned`: data bound with [`condition`](@ref).
 """
 struct Model{F,TArgs<:NamedTuple,TCond<:NamedTuple} <: AbstractPPL.AbstractProbabilisticProgram
     f::F           # the `_name_eval` function the @model macro generated (compiler.jl)
@@ -22,28 +20,39 @@ end
 # starts empty and is only ever populated later via `condition`/`|`.
 Model(f, args::NamedTuple) = Model(f, args, NamedTuple())
 
-"""
-    condition(model, nt::NamedTuple) -> Model
-    model | nt -> Model
-
-Returns a new `Model` with `nt` merged into `conditioned`. Re-specializes the
-evaluator for the new conditioning pattern (a new `TCond` type), not per
-value, so repeated conditioning with the same keys is cheap after the first
-compile.
-"""
 # `merge(m.conditioned, nt)` produces a NamedTuple whose TYPE encodes exactly
 # which names are conditioned — that's the "type domain" mentioned above: two
 # calls to `condition` with the same set of names (even different values)
 # produce the same `TCond` type, so Julia only needs to specialize/compile
 # the evaluator once per distinct *set of conditioned names*, not once per
 # distinct value.
+"""
+    condition(model, nt::NamedTuple) -> Model
+    model | nt -> Model
+
+Return a copy of `model` in which the variables named in `nt` are observed with
+the given values. Only whole variables can be conditioned, not elements.
+
+```jldoctest
+julia> @model function demo()
+           μ ~ Normal(0, 1)
+           y ~ Normal(μ, 1)
+       end;
+
+julia> m = demo() | (; y = 0.5);
+
+julia> logjoint(m, (; μ = 0.0)) ≈ logpdf(Normal(), 0.0) + logpdf(Normal(), 0.5)
+true
+```
+"""
 condition(m::Model, nt::NamedTuple) = Model(m.f, m.args, merge(m.conditioned, nt))
 Base.:|(m::Model, nt::NamedTuple) = condition(m, nt)
 
 """
     decondition(model, names::Symbol...) -> Model
 
-Removes `names` from `conditioned`, reverting those sites to assumed.
+Return a copy of `model` in which the variables `names`, previously bound with
+[`condition`](@ref), are parameters again.
 """
 function decondition(m::Model, names::Symbol...)
     # `Base.structdiff` builds the NamedTuple of fields in `m.conditioned`
@@ -55,9 +64,12 @@ end
 """
     evaluate(model, mode::AbstractEvalMode, acc::Accum) -> (retval, acc)
 
-Runs the model's evaluator under `mode`, threading `acc` through every tilde
-site. This is the single entry point used by all four modes (`TraceMode`,
-`EvalMode`, `PriorMode`, `FixedMode`).
+Run the model body once under `mode`, starting from the accumulator `acc`.
+Returns the body's return value and the final [`Accum`](@ref).
+
+The higher-level functions ([`sample`](@ref), [`logjoint`](@ref),
+[`predict`](@ref), ...) call this for you. See [Evaluation modes](@ref) for
+what each mode does.
 """
 @inline function evaluate(m::Model, mode::AbstractEvalMode, acc::Accum)
     # `m.f` is `_name_eval` from compiler.jl, whose fixed calling convention

@@ -73,22 +73,16 @@ for variables belonging to other blocks in a Gibbs sweep. Values behind a
 struct ValueSlot <: AbstractSlot end
 
 """
-    Layout{S<:NamedTuple,M}
+    Layout
 
-`slots`: NamedTuple mapping variable name -> `AbstractSlot`, isbits so that
-`getproperty(layout.slots, name)` is fully inferred and the assume-path branch
-(`FlatSlot` vs `FlatArraySlot` vs `ValueSlot`) compiles away per call site.
-`dim`: total length of the flat unconstrained vector.
-`meta`: `Vector{SiteRecord}` in trace-visitation order, used for naming chains,
-building initial vectors, and error messages — not used in `EvalMode`.
-`untracked`: names (a subset of the flat-slot names in `slots`) that should
-still be sampled — they occupy real space in `θ` and are fully part of the
-model — but are excluded by `invlink` (and therefore from chain-bundling,
-once `chains.jl` exists) as a memory/reporting optimization for models with
-many "nuisance" parameters nobody wants in the output. This is purely a
-reporting-level flag: `EvalMode`/`tilde.jl` never look at it, so an untracked
-site's gradient contribution and posterior correlation with everything else
-is completely unaffected.
+Where each of a model's parameters lives, as built by [`build_layout`](@ref).
+
+Fields:
+- `slots`: for each variable, either a range in the flat unconstrained vector
+  `θ` or a place in the constant store.
+- `dim`: the length of `θ`.
+- `meta`: one record per `~` statement visited, in order.
+- `untracked`: names sampled as usual but left out of [`invlink`](@ref) output.
 """
 struct Layout{S<:NamedTuple,M}
     slots::S
@@ -116,46 +110,36 @@ end
 const VectorLayout{S} = Layout{S,<:Vector{<:SiteRecord}}
 
 """
-    build_layout(model; flat=nothing, values=(), untracked=(), rng=Random.default_rng(), init=NamedTuple()) -> (layout, θ0, store0)
+    build_layout(model; flat=nothing, values=(), untracked=(), init=NamedTuple(),
+                 rng=Random.default_rng(), T=Float64, static=false) -> (layout, θ0, store0)
 
-Runs `model` once under `TraceMode` to discover its variables, then
-partitions assumed (non-conditioned) sites into flat-vector slots vs
-value-store slots.
+Run `model` once to find its parameters and decide where each one lives:
+in the flat unconstrained vector `θ` or in a store of constant values.
 
-- `flat`: `Tuple` of `Symbol`s to place in the flat vector, or `nothing` to
-  mean "every assumed site not listed in `values`".
-- `values`: `Tuple` of `Symbol`s to place in the constant store instead
-  (latents / other Gibbs blocks). Discrete-distribution sites MUST appear
-  here (or be conditioned) — there is no flat-vector encoding for them.
-- `untracked`: `Tuple` of `Symbol`s (must be a subset of the flat-vector
-  names) to mark as nuisance parameters: they still occupy real space in
-  `θ`, are still sampled, and still fully participate in the log-density and
-  its gradient — the ONLY effect is that `invlink` (and therefore chain
-  output, once `chains.jl` exists) omits them by default. Useful for very
-  large models with many per-observation/per-group parameters nobody wants
-  materialized in the output chain.
+# Keywords
+- `flat`: names to put in `θ`. `nothing` means every continuous parameter not
+  in `values`.
+- `values`: names to put in the store. Discrete parameters must go here.
+- `untracked`: names in `θ` to leave out of [`invlink`](@ref) output.
+- `init`: starting values by name; other parameters are drawn from the prior.
+- `T`: element type of `θ0`, e.g. `Float32`.
+- `static`: hold the site records in a `Tuple`, for `juliac --trim`. Defaults
+  to `true` for an [`@static_model`](@ref).
 
-Returns the `Layout`, an initial flat vector `θ0` (via `to_linked_vec` on each
-site's initial constrained value), and an initial store NamedTuple `store0`.
+Returns the [`Layout`](@ref), the starting vector `θ0` and the starting store.
 
-`T` fixes the element type of `θ0` (default `Float64`). This only affects the
-*initial* vector handed to the sampler — the hot path (`tilde.jl`/`EvalMode`)
-never hardcodes a numeric type: it is parametric on `eltype(θ)` throughout, so
-a caller can subsequently swap in a `Vector{Float32}` (for SIMD) or a
-`CuVector{Float32}` (for GPU) of the same length and everything downstream
-(logpdf, bijector transforms, `Accum`) will compute in that type. Distributions.jl
-itself is generally eltype-generic (`logpdf(Normal(0f0,1f0), 0f0)::Float32`);
-the exceptions are distributions whose parameters are stored/promoted as
-`Float64` internally, which is a Distributions.jl-level limitation, not one
-introduced by this package.
+```jldoctest
+julia> @model function demo(y)
+           μ ~ Normal(0, 1)
+           σ ~ Exponential(1)
+           y ~ Normal(μ, σ)
+       end;
 
-**Float32 usage note:** To maintain Float32 precision throughout the computation,
-use Float32 suffixes on distribution literals (e.g., `Normal(0f0, 1f0)`,
-`Exponential(1f0)`). If you write `Normal(0.0, 1.0)`, the distribution will be
-`Normal{Float64}` and `logpdf` will return `Float64`, causing promotion even
-with a Float32 parameter vector. Data can remain Float64 without performance
-penalty — the speedup comes from using Float32 for parameters (the things being
-differentiated by AD), not for data.
+julia> layout, θ0, store0 = build_layout(demo(1.0); T=Float32);
+
+julia> layout.dim, eltype(θ0)
+(2, Float32)
+```
 """
 function build_layout(
     model;
@@ -321,19 +305,29 @@ function build_layout(
     return layout, θ0, store0
 end
 
-"""
-    link(layout, nt::NamedTuple) -> θ::Vector{Float64}
-
-Maps a NamedTuple of constrained values (keyed by the flat-slot variable
-names in `layout`) to the flat unconstrained vector, using each site's
-`dist_exemplar` from `layout.meta` for the transform. Used by Gibbs to
-refresh a component sampler's state after other blocks moved.
-"""
 # Collapse a view to a plain array. A scalar (or anything already materialised)
 # passes through untouched, so this costs nothing on the common path.
 @inline _materialize(x::SubArray) = collect(x)
 @inline _materialize(x) = x
 
+"""
+    link(layout, nt::NamedTuple) -> Vector{Float64}
+
+Map constrained parameter values, keyed by name, to the flat unconstrained
+vector `θ` described by `layout`. The inverse of [`invlink`](@ref).
+
+```jldoctest
+julia> @model function demo()
+           σ ~ Exponential(1)
+       end;
+
+julia> layout, _, _ = build_layout(demo());
+
+julia> link(layout, (; σ = 1.0))
+1-element Vector{Float64}:
+ 0.0
+```
+"""
 function link(layout::Layout, nt::NamedTuple)
     chunks = Vector{Float64}[]
     # Re-derive the by-name grouping from `layout.meta` (this is cheap, O(number
@@ -365,14 +359,11 @@ end
 """
     invlink(layout, θ; include_untracked=false) -> NamedTuple
 
-Inverse of `link`: maps a flat unconstrained vector back to a NamedTuple of
-constrained values for every flat-slot variable in `layout`. Used for
-MCMCChains bundling, `predict`, and Gibbs block updates.
+Map the flat unconstrained vector `θ` back to constrained values, as a
+`NamedTuple` keyed by name. The inverse of [`link`](@ref).
 
-Names in `layout.untracked` (see `build_layout`'s `untracked` keyword) are
-omitted unless `include_untracked=true` — they're still fully present in `θ`
-and the log-density, this just controls whether they're materialized into
-the returned NamedTuple (and, downstream, into a chain).
+Names marked `untracked` in [`build_layout`](@ref) are left out unless
+`include_untracked=true`.
 """
 function invlink(layout::Layout, θ::AbstractVector; include_untracked=false)
     by_name = Dict{Symbol,Vector{SiteRecord}}()
