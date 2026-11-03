@@ -100,7 +100,13 @@ function LogDensityFunction(
     #
     # Opt out with `closed_form=false` when you want the AD path specifically
     # (e.g. checking the closed form against it, which `check_gradmode` does).
-    if closed_form && !(adtype isa GradMode)
+    #
+    # Never for `AutoPBForwardDiff`: that backend exists only so a model can be
+    # compiled with `juliac --trim`, and the closed-form path does not survive
+    # the trimmer. Substituting it would quietly defeat the one thing the user
+    # asked for by naming that backend (seen: the trimming guide had to pass
+    # `closed_form=false` to get a GLM-shaped model to trim).
+    if closed_form && !(adtype isa GradMode) && !(adtype isa AutoPBForwardDiff)
         gm = _maybe_gradmode(model, store, θ0)
         if !isempty(gm)
             return LogDensityFunction(model, layout, store, GradMode(), gm[1], reject_errors)
