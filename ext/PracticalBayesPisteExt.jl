@@ -9,12 +9,9 @@ module PracticalBayesPisteExt
 # package supports) can never trim anything, so they should not be made to
 # install an AD engine they cannot use.
 #
-# There is a second, harder reason. Piste is not in the General registry yet, so
-# it can only be installed by URL (`Pkg.add(url="https://github.com/EvoArt/Piste.jl")`).
-# As a hard dependency that made it unresolvable for anyone who had not done so
-# — and a `[sources]` entry, the usual fix, is silently IGNORED on Julia 1.10
-# ("Piste has no known versions!"), which broke `Pkg.instantiate` there
-# outright. As a weak dependency, nobody needs it until they `import Piste`.
+# Piste is registered in General (0.1.0); later releases may only be
+# installable by URL until they are registered too. This method uses only
+# `value_and_gradient!(g, f, x, Val(N))`, which is unchanged from 0.1 to 0.3.
 #
 # The backend TYPE stays in the package proper (`src/forwarddiff.jl`), so
 # `AutoPBForwardDiff` can always be named and `chunksize` always works; only the
