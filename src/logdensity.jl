@@ -142,24 +142,22 @@ function LogDensityFunction(
     return LogDensityFunction(model, layout, store, adtype, prep, reject_errors)
 end
 
+# Why not the full Layout: a reverse-mode backend builds and zeroes a tangent
+# for every constant argument on every gradient call, and a `Layout` carries
+# `meta::Vector{SiteRecord}` and a `Set` along with its slots. Each SiteRecord
+# keeps its site's distribution exemplar and initial value, so for an observe
+# site like `y ~ MvNormal(X * beta, ...)` that is an N-length vector. Measured
+# under Mooncake on the normal-regression benchmark (Julia 1.12.7, Mooncake
+# 0.5.67): the full Layout cost 8 extra allocations per gradient and a time
+# penalty that grew with N (Turing 287 us, PB 345 us at N=20_000; a CPU profile
+# put 12.7% of PB's gradient time in Mooncake zeroing those tangents). Passing
+# only the slots gave exactly Turing's 17 allocations and its time (277 us),
+# with identical values and gradients.
 """
     EvalLayout(layout::Layout)
 
-The part of a [`Layout`](@ref) that model evaluation actually reads: its
-`slots` (an isbits NamedTuple), and nothing else. This, not the `Layout`, is
-what every AD call receives as its constant layout argument.
-
-The difference is a real cost, not tidiness. A reverse-mode backend builds and
-zeroes a tangent for every constant argument on every gradient call, and a
-`Layout` carries `meta::Vector{SiteRecord}` and a `Set` along with its slots.
-Each `SiteRecord` keeps its site's distribution exemplar and initial value, so
-for an observe site like `y ~ MvNormal(X * beta, ...)` that is an N-length
-vector. Measured under Mooncake on the normal-regression benchmark (Julia
-1.12.7, Mooncake 0.5.67): the full Layout cost 8 extra allocations per gradient
-and a time penalty that grew with N (Turing 287 us, PB 345 us at N=20_000;
-ProfileToLLM put 12.7% of PB's gradient time in Mooncake zeroing those
-tangents). Passing only the slots gave exactly Turing's 17 allocations and its
-time (277 us), with identical values and gradients.
+The part of a [`Layout`](@ref) that model evaluation reads: its `slots`. Every
+AD call receives this as its constant layout argument, not the `Layout`.
 """
 struct EvalLayout{S<:NamedTuple}
     slots::S
