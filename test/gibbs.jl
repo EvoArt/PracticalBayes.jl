@@ -198,7 +198,9 @@ end
 
     # Chain 2: NUTS directly on the marginalized model.
     m_marginal = hmm_marginal(y)
-    layout2, θ0_2, store0_2 = build_layout(m_marginal)
+    # Seeded: from the global RNG the starting point, and so the check below,
+    # differed run to run.
+    layout2, θ0_2, store0_2 = build_layout(m_marginal; rng=StableRNG(13))
     ldf2 = LogDensityFunction(m_marginal, layout2, store0_2, ADTypes.AutoForwardDiff(); θ0=θ0_2)
     ldm2 = AbstractMCMC.LogDensityModel(ldf2)
     rng2 = StableRNG(12)
@@ -216,8 +218,12 @@ end
     p2 = p_stay_draws2[(n_burn + 1):end]
     s2 = sigma_draws2[(n_burn + 1):end]
 
-    combined_se_p = sqrt(std(p1)^2 / length(p1) + std(p2)^2 / length(p2))
-    combined_se_s = sqrt(std(s1)^2 / length(s1) + std(s2)^2 / length(s2))
+    # MC-SE by batch means (20 batches), not `std/sqrt(N)`: both chains are
+    # autocorrelated, so the naive SE understates the error, and this check
+    # failed at that bound (0.0080 vs 0.0077 at 3x, 2026-11-03).
+    bm_se(x) = (b = length(x) ÷ 20; std([mean(x[(k - 1) * b + 1:k * b]) for k in 1:20]) / sqrt(20))
+    combined_se_p = sqrt(bm_se(p1)^2 + bm_se(p2)^2)
+    combined_se_s = sqrt(bm_se(s1)^2 + bm_se(s2)^2)
     @test abs(mean(p1) - mean(p2)) < 3 * combined_se_p
     @test abs(mean(s1) - mean(s2)) < 3 * combined_se_s
 end
