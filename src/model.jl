@@ -108,9 +108,7 @@ _model_info(f) = applicable(f, _ModelInfo()) ? f(_ModelInfo()) : _NO_MODEL_INFO
 # `_call_model` unwraps it at compile time.
 #
 # `_call_model` writes the evaluator call out argument by argument (`f(mode,
-# acc, getfield(args, 1), ...)`) rather than splatting a tuple: splatting a
-# tuple returned by another call was not inlined on Julia 1.10, which then
-# heap-allocated it on every evaluation (16 bytes per log-density call).
+# acc, getfield(args, 1), ...)`), so no argument tuple is built per call.
 struct TypeWrap{T} end
 _wrap_type(::Type{T}) where {T} = TypeWrap{T}()
 _wrap_type(x) = x
