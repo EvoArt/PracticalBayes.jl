@@ -60,6 +60,9 @@ macro model(expr)
     # variant of function-definition syntax (short form, where-clauses, etc).
     def = splitdef(expr)
     name = def[:name]
+    # Anonymous typed arguments (Turing's `::Type{T}=Float64` idiom) get a name,
+    # so the evaluator and `Model.args` can carry them like any other argument.
+    def[:args] = _name_anonymous_args(def[:args])
     # `:=`'d names are folded into the same `argnames` set used for the
     # data-vs-parameter decision — from the tilde-rewriter's point of view,
     # "declared as a model argument" and "already computed via `z := expr`
@@ -94,6 +97,13 @@ macro model(expr)
     # fully-escaped quote produces invalid syntax ("escape (escape ...)").
     # Module-qualifying is the standard way to reach into our own package's
     # internals from inside an escaped quote without re-escaping.
+    #
+    # The qualifier is the module OBJECT, interpolated (`$(PracticalBayes).x`),
+    # never the bare name `PracticalBayes`: escaped code resolves names in the
+    # CALLER's module, and a caller that wrote `import PracticalBayes as PB`
+    # has no binding called `PracticalBayes` there, so every generated model
+    # failed with `UndefVarError`. The same applies to every `$(PracticalBayes)`
+    # in this file.
     # `Model.args` is always ONE flat NamedTuple, splatted POSITIONALLY into
     # the evaluator by `evaluate` (`m.f(mode, acc, m.args...)`, model.jl) — so
     # the evaluator itself takes every model argument positionally, keyword
@@ -106,11 +116,20 @@ macro model(expr)
     # positional splat of a NamedTuple can't bind to a `function f(; k)`
     # keyword parameter.
     eval_arg_names = vcat(map(_argsym, def[:args]), map(_argsym, def[:kwargs]))
+    # Arguments are bare names on the evaluator, EXCEPT where the annotation
+    # mentions a `where` parameter: that annotation is the only thing that can
+    # bind the parameter (`::Type{T}` binds `T`, `::Val{k}` binds `k`), and the
+    # body may use it.
+    wnames = _where_names(get(def, :whereparams, ()))
+    eval_pos_args = map(def[:args]) do a
+        ann = _annotation(a)
+        ann !== nothing && _mentions(ann, wnames) ? :($(_argsym(a))::$(ann)) : _argsym(a)
+    end
     eval_def = Dict(
         :name => eval_name,
         :args => [
-            :(__mode__::PracticalBayes.AbstractEvalMode), :(__acc__::PracticalBayes.Accum),
-            eval_arg_names...,
+            :(__mode__::$(PracticalBayes).AbstractEvalMode), :(__acc__::$(PracticalBayes).Accum),
+            eval_pos_args..., map(_argsym, def[:kwargs])...,
         ],
         :kwargs => [],
         :whereparams => def[:whereparams],
@@ -130,7 +149,9 @@ macro model(expr)
     # away for a concrete conditioning-pattern type).
     ctor_args = def[:args]
     ctor_kwargs = def[:kwargs]
-    nt_pairs = [:($(a) = $(a)) for a in eval_arg_names]
+    # `_wrap_type` (model.jl) keeps a type-valued argument in the type domain;
+    # it is the identity on everything else.
+    nt_pairs = [:($(a) = $(PracticalBayes)._wrap_type($(a))) for a in eval_arg_names]
 
     ctor_def = Dict(
         :name => name,
@@ -138,7 +159,7 @@ macro model(expr)
         :kwargs => ctor_kwargs,
         :whereparams => def[:whereparams],
         :body => quote
-            return PracticalBayes.Model($(eval_name), (; $(nt_pairs...)))
+            return $(PracticalBayes).Model($(eval_name), (; $(nt_pairs...)))
         end,
     )
     ctor_fn = combinedef(ctor_def)
@@ -165,7 +186,7 @@ macro model(expr)
         # compile".
         nothing
     end
-    plan_fn = :(PracticalBayes.gradmode_plan(::typeof($(eval_name))) = $(QuoteNode(plan)))
+    plan_fn = :($(PracticalBayes).gradmode_plan(::typeof($(eval_name))) = $(QuoteNode(plan)))
 
     return esc(quote
         $(eval_fn)
@@ -191,6 +212,39 @@ function _argsym(a)
     error("unsupported arg form: $a")
 end
 _argexpr(a) = _argsym(a)
+
+# An argument's type annotation (`x::T` or `x::T=default`), or `nothing`.
+function _annotation(a)
+    a isa Expr && a.head == :kw && return _annotation(a.args[1])
+    a isa Expr && a.head == :(::) && length(a.args) == 2 && return a.args[2]
+    return nothing
+end
+
+# The names a `where` clause introduces: `T`, and `T` from `T<:Real`.
+_where_names(ps) = Set{Symbol}(p isa Symbol ? p : p.args[1] for p in ps)
+
+# Whether expression `ex` mentions any symbol in `names`.
+_mentions(ex::Symbol, names) = ex in names
+_mentions(ex::Expr, names) = any(a -> _mentions(a, names), ex.args)
+_mentions(_, names) = false
+
+# `::T` and `::T=default` positional arguments have no name, and a model needs
+# one for every argument (it is a field of `Model.args` and a parameter of the
+# evaluator). Turing models use them for type parameters, e.g.
+# `@model function m(x, ::Type{T}=Vector{Float64}) where {T}`; the `where`
+# clause still binds `T` from the named argument's type.
+function _name_anonymous_args(args)
+    return map(enumerate(args)) do (i, a)
+        anon(x) = x isa Expr && x.head == :(::) && length(x.args) == 1
+        name = Symbol("__pb_arg_", i)
+        if anon(a)
+            return Expr(:(::), name, a.args[1])
+        elseif a isa Expr && a.head == :kw && anon(a.args[1])
+            return Expr(:kw, Expr(:(::), name, a.args[1].args[1]), a.args[2])
+        end
+        return a
+    end
+end
 
 # The set of the model's own argument names — BOTH positional (`def[:args]`)
 # and keyword (`def[:kwargs]`, e.g. `@model function foo(; N::Int) ... end`)
@@ -286,9 +340,9 @@ function _tilde_expansion(lhs, rhs, argnames)
         # what lets the generated code skip DynamicPPL's runtime
         # `inargnames`/context-walk check entirely.
         s = lhs
-        valueexpr = s in argnames ? s : :(PracticalBayes.getcond(__mode__, $(Val)($(QuoteNode(s)))))
+        valueexpr = s in argnames ? s : :($(PracticalBayes).getcond(__mode__, $(Val)($(QuoteNode(s)))))
         return quote
-            ($(s), __acc__) = PracticalBayes.tilde(__mode__, $(Val)($(QuoteNode(s))), $(rhs), $(valueexpr), __acc__)
+            ($(s), __acc__) = $(PracticalBayes).tilde(__mode__, $(Val)($(QuoteNode(s))), $(rhs), $(valueexpr), __acc__)
         end
     elseif lhs isa Expr && lhs.head == :ref
         # Indexed `x[i, j, ...] ~ D`: `lhs.args[1]` is the container
@@ -313,7 +367,7 @@ function _tilde_expansion(lhs, rhs, argnames)
             # the caller's data array during tracing. The observe path never
             # writes into `container`; see `tilde_index_observe` in tilde.jl.
             return quote
-                __acc__ = PracticalBayes.tilde_index_observe(
+                __acc__ = $(PracticalBayes).tilde_index_observe(
                     __mode__, $(Val)($(QuoteNode(s))), $(container), ($(idx...),), $(rhs), __acc__
                 )
             end
@@ -323,7 +377,7 @@ function _tilde_expansion(lhs, rhs, argnames)
         # target here is just a throwaway — we don't need `container[idx...]`
         # on the left because the container is already updated in place.
         return quote
-            (_pb_tmp_, __acc__) = PracticalBayes.tilde_index(
+            (_pb_tmp_, __acc__) = $(PracticalBayes).tilde_index(
                 __mode__, $(Val)($(QuoteNode(s))), $(container), ($(idx...),), $(rhs), __acc__
             )
         end
@@ -356,7 +410,7 @@ function _dot_tilde_expansion(lhs, rhs, argnames)
     )
     s = lhs
     return quote
-        (__acc__) = PracticalBayes.tilde_dot(__mode__, $(Val)($(QuoteNode(s))), $(lhs), $(rhs), __acc__)
+        (__acc__) = $(PracticalBayes).tilde_dot(__mode__, $(Val)($(QuoteNode(s))), $(lhs), $(rhs), __acc__)
     end
 end
 
@@ -457,14 +511,14 @@ function _rewrite_addlogprob(body)
             expr = args[1]
             depends = _extract_depends(args[2:end], x)
             depends === nothing &&
-                return :(__acc__ = PracticalBayes.acc_lik(__acc__, $(expr)))
+                return :(__acc__ = $(PracticalBayes).acc_lik(__acc__, $(expr)))
             # Gated form: evaluate the term ONLY when the current evaluation can
             # be affected by it. `addlogprob_needed` folds to a compile-time
             # constant (tilde.jl), so for a block that skips this term the whole
             # branch — and `expr` with it — is eliminated, not merely short-circuited.
             return quote
-                if PracticalBayes.addlogprob_needed(__mode__, $(depends))
-                    __acc__ = PracticalBayes.acc_lik(__acc__, $(expr))
+                if $(PracticalBayes).addlogprob_needed(__mode__, $(depends))
+                    __acc__ = $(PracticalBayes).acc_lik(__acc__, $(expr))
                 end
             end
         else
@@ -574,7 +628,9 @@ macro static_model(expr)
     # difference is the default `static` flag recorded on the Model, which
     # `build_layout` reads. Delegating rather than duplicating keeps the two
     # macros from drifting apart.
-    inner = macroexpand(__module__, :(@model $expr))
+    # `@model` is looked up through our module, not the caller's: a caller
+    # using `PB.@static_model` need not have `@model` in scope.
+    inner = macroexpand(__module__, Expr(:macrocall, GlobalRef(PracticalBayes, Symbol("@model")), __source__, expr))
     def = splitdef(expr)
     # The trait is attached to the EVALUATOR (`_name_eval`), not the
     # user-facing constructor: `build_layout` receives a `Model`, whose `f`
@@ -582,7 +638,7 @@ macro static_model(expr)
     eval_name = Symbol("_", def[:name], "_eval")
     return esc(quote
         $(inner)
-        PracticalBayes.prefers_static_layout(::typeof($eval_name)) = true
+        $(PracticalBayes).prefers_static_layout(::typeof($eval_name)) = true
         $(def[:name])
     end)
 end

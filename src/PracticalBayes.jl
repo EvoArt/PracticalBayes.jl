@@ -15,8 +15,15 @@ using ForwardDiff: ForwardDiff
 # Re-export its samplers and AbstractMCMC's `sample` so `using PracticalBayes`
 # alone is enough to build a model, pick a sampler, and run it — no second
 # `using AdvancedHMC`/`using AbstractMCMC` needed at the call site.
-using AbstractMCMC: AbstractMCMC, sample
-using AdvancedHMC: HMC, NUTS, HMCDA
+using AbstractMCMC: AbstractMCMC, sample, MCMCThreads, MCMCSerial, MCMCDistributed
+using AdvancedHMC: AdvancedHMC, HMC, HMCDA   # `NUTS` is PB's own: see nuts.jl
+# The AD backend constructors Turing re-exports, so `NUTS(; adtype=AutoMooncake())`
+# and `sample(...; adtype=AutoEnzyme())` need no `using ADTypes`. The backend
+# package itself (Mooncake, Enzyme, ...) must still be loaded by the user.
+using ADTypes: AutoForwardDiff, AutoReverseDiff, AutoMooncake, AutoEnzyme
+# Turing exports LinearAlgebra's `I`, and Turing models lean on it
+# (`MvNormal(mu, sigma^2 * I)`) without importing LinearAlgebra themselves.
+using LinearAlgebra: I
 
 include("accumulator.jl")
 include("distributions.jl")
@@ -35,7 +42,9 @@ include("logdensity.jl")
 include("optimize.jl")
 include("latent.jl")
 include("conjugate.jl")
+include("particle_gibbs.jl")
 include("save_states.jl")
+include("nuts.jl")
 include("gibbs.jl")
 include("check_depends.jl")
 include("jittered_nsteps.jl")
@@ -61,14 +70,17 @@ export evaluate, paramtype
 export maximum_a_posteriori, maximum_likelihood, laplace_approximation
 export PointEstimate, LaplaceApproximation, laplace_mvnormal
 export AbstractLatentKernel, ModelConditional, latent_step
-export ConjugateGibbs
+export ConjugateGibbs, PG, ParticleMode
 export Gibbs, GibbsState, hmc_tuning, warm_start
 export check_depends, DependsReport
 export SaveToChain, SaveToBuffer, SaveToDisk, write_state_chunk!, read_states
 export SymChain
 # Re-exported so `using PracticalBayes` is self-contained for running inference:
 export sample, HMC, NUTS, HMCDA, NUTSthenHMC, AdaptiveHMC, JitteredNSteps
-export default_progress
+export MCMCThreads, MCMCSerial, MCMCDistributed
+export AutoForwardDiff, AutoReverseDiff, AutoMooncake, AutoEnzyme
+export I
+export default_progress, setprogress!
 export returned, predict, chain_draws, param_draws, loglikelihood_at, pointwise_loglikelihoods
 
 end # module PracticalBayes

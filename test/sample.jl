@@ -7,7 +7,7 @@
 # bundling path.
 
 using Distributions: Normal, Exponential
-using AdvancedHMC: NUTS
+# `NUTS` is PracticalBayes' own export (src/nuts.jl), not AdvancedHMC's type.
 using StableRNGs: StableRNG
 import AbstractMCMC
 using Statistics: mean, std
@@ -39,17 +39,14 @@ import FlexiChains
     mu_draws = vec(chn[:mu])
     @test length(mu_draws) == 2000
 
-    # NOT held to a naive `3 * std/sqrt(N)` MC-SE bound — that formula
-    # assumes independent draws, and confirmed directly (this exact test
-    # failed on CI, by a small margin, at that bound — 0.01345 vs a 0.01300
-    # threshold) that autocorrelated NUTS draws have a smaller effective
-    # sample size than raw N, so the true MC-SE is larger than the naive
-    # formula gives (same root cause already found/documented for the
-    # MCMCThreads pooled-mean check below). A slightly looser 4x multiplier
-    # keeps this a real, numerically-checked accuracy gate while being
-    # robust to platform-level RNG/floating-point differences between
-    # this package's Windows dev environment and Linux CI runners.
-    mcse = std(mu_draws) / sqrt(length(mu_draws))
+    # NOT the naive `std/sqrt(N)` MC-SE: that assumes independent draws, and
+    # autocorrelated NUTS draws have a smaller effective sample size, so it
+    # understates the error. It failed twice at the boundary (CI: 0.01345 vs
+    # 0.01300 at 3x; 2026-11-01: 0.0165 vs 0.0163 at 4x, when the starting
+    # point still came from the global RNG and so varied run to run). Batch
+    # means (20 batches of 100) estimate the MC-SE WITH the autocorrelation.
+    batch = [mean(mu_draws[(b - 1) * 100 + 1:b * 100]) for b in 1:20]
+    mcse = std(batch) / sqrt(length(batch))
     @test abs(mean(mu_draws) - post_mean) < 4 * mcse
 end
 
@@ -220,9 +217,14 @@ end
     m = m3(randn(StableRNG(5), 10))
     is_adapt(chn) = vec(chn[FlexiChains.Extra(:is_adapt)])
 
-    # default n_adapts = min(N ÷ 10, 1000), AdvancedHMC's own default
+    # Turing's defaults: n_adapts = min(1000, N ÷ 2), all of it discarded, so
+    # the chain holds N post-warm-up draws
     chn = AbstractMCMC.sample(StableRNG(6), m, NUTS(0.8), 100; progress=false)
-    @test count(is_adapt(chn)) == 10
+    @test size(chn, 1) == 100
+    @test !any(is_adapt(chn))
+    # ...and discard_initial=0 keeps the warm-up, whose length is that default
+    chn = AbstractMCMC.sample(StableRNG(6), m, NUTS(0.8), 100; discard_initial=0, progress=false)
+    @test count(is_adapt(chn)) == 50
 
     # discard_initial = n_adapts drops exactly the warm-up, keeping N draws
     chn = AbstractMCMC.sample(StableRNG(6), m, NUTS(0.8), 40;
@@ -270,4 +272,37 @@ end
     raw = AbstractMCMC.sample(StableRNG(9), m4(y), NUTS(0.8f0), 20;
                               n_adapts=10, chain_type=nothing, progress=false)
     @test eltype(raw[1].z.θ) === Float32
+end
+
+@testset "sample.jl: a seeded sample is reproducible" begin
+    # The starting point is drawn from the prior, and until 2026-11-01 it came
+    # from the GLOBAL RNG, so the same seed gave a different chain each run.
+    @model function m_seed(y)
+        mu ~ Normal(0, 1)
+        sigma ~ Exponential(1)
+        y .~ Normal.(mu, sigma)
+    end
+    y = randn(StableRNG(20), 15)
+    run1 = AbstractMCMC.sample(StableRNG(21), m_seed(y), NUTS(0.8), 30; progress=false)
+    run2 = AbstractMCMC.sample(StableRNG(21), m_seed(y), NUTS(0.8), 30; progress=false)
+    @test vec(run1[:mu]) == vec(run2[:mu])
+    spl = Gibbs(:mu => NUTS(0.8), :sigma => NUTS(0.8))
+    g1 = AbstractMCMC.sample(StableRNG(22), m_seed(y), spl, 20; n_adapts=10, chain_type=nothing, progress=false)
+    g2 = AbstractMCMC.sample(StableRNG(22), m_seed(y), spl, 20; n_adapts=10, chain_type=nothing, progress=false)
+    @test g1 == g2
+end
+
+@testset "sample.jl: raw transitions from PB's own HMC samplers, progress on" begin
+    # `chain_type=nothing` used to go through AdvancedHMC's `sample`, whose
+    # progress callback only accepts an `HMCState`: NUTSthenHMC (own state
+    # type) threw a MethodError whenever the meter was on.
+    @model function m_raw(y)
+        mu ~ Normal(0, 1)
+        y .~ Normal.(mu, 1.0)
+    end
+    m = m_raw(randn(StableRNG(50), 10))
+    raw = AbstractMCMC.sample(StableRNG(51), m, NUTSthenHMC(0.8; n_leapfrog=8), 40;
+                              chain_type=nothing, progress=true)
+    @test length(raw) == 40
+    @test !any(get(t.stat, :is_adapt, false) for t in raw)   # warm-up discarded, as on the chain path
 end

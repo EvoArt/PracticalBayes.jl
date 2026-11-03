@@ -13,8 +13,11 @@ using Distributions: Distributions, Distribution, logpdf, loglikelihood, Discret
 # materialize a per-observation array the way `logpdf.(dist, y)` does before
 # summing) and is the right generic answer. The array-of-distinct-dists case
 # (`Normal.(mus, sigma)` with a vector `mus`) isn't supported by
-# `loglikelihood` at all, so it falls back to `sum(logpdf.(...))`, which
-# allocates ~80KB per call on a 10_000-observation model.
+# `loglikelihood` at all, so it falls back to summing the lazy broadcast
+# `logpdf.(dists, y)` — no per-observation temporary (it used to be
+# `sum(logpdf.(...))`, which allocated ~80KB per call on a 10_000-observation
+# model). The array of distributions itself is still the user's own
+# allocation: `Normal.(mus, sigma)` is evaluated before PB ever sees it.
 #
 # WHY THE SPECIALIZATIONS BELOW EXIST (measured, Julia 1.10.9,
 # Distributions 0.25.129, -O3, N=10_000, Float64)
@@ -50,7 +53,21 @@ using Distributions: Distributions, Distribution, logpdf, loglikelihood, Discret
 # not matched here falls through to the generic methods, so an unrecognized
 # distribution is only ever slow, never wrong.
 @inline _dot_loglik(dist_bcast::Distribution, y) = loglikelihood(dist_bcast, y)
-@inline _dot_loglik(dist_bcast, y) = sum(logpdf.(dist_bcast, y))
+@inline function _dot_loglik(dist_bcast, y)
+    # Array of distinct distributions. `sum(logpdf.(dist_bcast, y))` would
+    # first materialize a per-observation array of log-densities; summing the
+    # LAZY broadcast instead reduces as it goes, with no temporary. Same
+    # broadcasting semantics (shape mismatch errors, singleton expansion);
+    # only the floating-point summation order can differ.
+    bc = Broadcast.instantiate(Broadcast.broadcasted(logpdf, dist_bcast, y))
+    return _sum_broadcast(Broadcast.BroadcastStyle(typeof(bc)), bc)
+end
+# Only CPU arrays take the lazy reduction. GPU array packages define their
+# own broadcast styles and reduce a MATERIALIZED array with a device kernel;
+# whether they also reduce a lazy `Broadcasted` efficiently is up to each
+# package, so they keep the plain broadcast-then-sum path they already had.
+@inline _sum_broadcast(::Broadcast.DefaultArrayStyle, bc) = sum(bc)
+@inline _sum_broadcast(_, bc) = sum(Broadcast.materialize(bc))
 # --- specialized kernels ----------------------------------------------------
 # Each follows the same shape: hoist every parameter-only term out of the
 # loop, keep the per-element body branch-free so it vectorizes, and add the

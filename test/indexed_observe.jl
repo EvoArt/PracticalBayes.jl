@@ -7,7 +7,7 @@
 # sampling crashed storing a `Dual` into the `Vector{Float64}` data argument.
 
 using Distributions: Normal, Exponential, Poisson, logpdf
-using AdvancedHMC: NUTS
+# `NUTS` is PracticalBayes' own export (src/nuts.jl), not AdvancedHMC's type.
 using ADTypes: AutoForwardDiff
 using StableRNGs: StableRNG
 import AbstractMCMC

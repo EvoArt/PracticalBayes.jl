@@ -94,6 +94,8 @@ end
 # Plain HMC adapts nothing: its metric and step size are the ones it was built
 # with, so there is nothing to carry.
 _warm_kernel(k::AdvancedHMC.HMC, tu, adapt::Symbol) = k
+# `NUTS(; adtype=...)`: warm the sampler inside, keep the block's backend.
+_warm_kernel(k::_ADSampler, tu, adapt::Symbol) = _ADSampler(_warm_kernel(k.sampler, tu, adapt), k.adtype)
 
 _warm_kernel(k, tu, adapt::Symbol) = throw(ArgumentError(
     "warm_start supports AdaptiveHMC, NUTS and HMC blocks, not $(nameof(typeof(k)))"))

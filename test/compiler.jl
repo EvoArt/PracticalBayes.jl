@@ -194,3 +194,31 @@ end
     m3 = mixedmodel(1.0; N=3)
     @test m3.args == (x=1.0, N=3)
 end
+
+# `import PracticalBayes as PB` binds only `PB` in the caller's module. The
+# generated model code is spliced into that module, so it must reach the
+# package's internals through the module object, not the name
+# `PracticalBayes` (which used to raise `UndefVarError` on first use).
+module _PBAliasTest
+import PracticalBayes as PBalias
+import Distributions
+PBalias.@model function alias_model(y)
+    mu ~ Distributions.Normal(0, 1)
+    y .~ Distributions.Normal.(mu, 1.0)
+    PBalias.@addlogprob! -0.5 * mu^2
+end
+PBalias.@static_model function alias_static(y)
+    mu ~ Distributions.Normal(0, 1)
+    y ~ Distributions.Normal(mu, 1.0)
+end
+end
+
+@testset "compiler.jl: `import PracticalBayes as PB` works" begin
+    @test !isdefined(_PBAliasTest, :PracticalBayes)
+    m = _PBAliasTest.alias_model([0.5, 1.5])
+    ref = logpdf(Normal(0, 1), 0.2) + sum(logpdf.(Normal(0.2, 1.0), [0.5, 1.5])) - 0.5 * 0.2^2
+    @test PracticalBayes.logjoint(m, (; mu=0.2)) ≈ ref
+    ms = _PBAliasTest.alias_static(1.0)
+    @test PracticalBayes.prefers_static_layout(ms.f)
+    @test PracticalBayes.logjoint(ms, (; mu=0.2)) ≈ logpdf(Normal(0, 1), 0.2) + logpdf(Normal(0.2, 1.0), 1.0)
+end
