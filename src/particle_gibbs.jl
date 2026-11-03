@@ -39,29 +39,19 @@
 """
     PG(n_particles)
 
-Particle Gibbs kernel: resamples a [`Gibbs`](@ref) block from its full
-conditional with conditional sequential Monte Carlo, using `n_particles`
-particles (at least 2). Use it for discrete latent variables that have no
-closed-form or hand-written kernel:
+A Gibbs kernel that draws a [`Gibbs`](@ref) block by particle Gibbs
+(conditional sequential Monte Carlo) with `n_particles` particles, at least 2.
+Use it for discrete latent variables that have no exact kernel.
 
 ```julia
-spl = Gibbs(:k => PG(50), (:μ, :w) => NUTS(0.8))
-chain = sample(model, spl, 1000)
+spl = Gibbs(:k => PG(50), (:μ, :w) => NUTS())
+chn = sample(model, spl, 1000)
 ```
 
-Block values are proposed from their prior and weighted by every other term in
-the model, resampling after each observation. The chain this produces has the
-block's exact conditional as its stationary distribution for any
-`n_particles ≥ 2`; more particles mix faster per sweep.
-
-Each sweep re-runs the model once per particle per observation (see the
-implementation notes in `src/particle_gibbs.jl`), so cost grows with the square
-of the number of observe statements. For hidden Markov models and similar
-chain-structured latents an exact forward-filtering/backward-sampling kernel
-(see [`gibbs_step`](@ref)) is both faster and mixes better.
-
-Mirrors Turing's `PG`, so `Gibbs(:s => PG(100), ...)` from a Turing tutorial
-runs unchanged.
+More particles mix faster per sweep. Each sweep re-runs the model once per
+particle per observation, so the cost grows with the square of the number of
+observe statements. For hidden Markov models and similar chains an exact
+[`gibbs_step`](@ref) kernel is faster and mixes better.
 """
 struct PG <: AbstractGibbsKernel
     n_particles::Int

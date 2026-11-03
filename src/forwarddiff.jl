@@ -77,35 +77,17 @@
 """
     AutoPBForwardDiff(; chunk=8)
 
-PracticalBayes' own forward-mode AD backend — **the one that survives
-`juliac --trim=safe`**.
-
-Pass it where any other AD backend would go:
+A forward-mode AD backend built on [Piste.jl](https://github.com/EvoArt/Piste.jl),
+written to compile under `juliac --trim`. Needs `import Piste` and Julia 1.12.
 
 ```julia
+import Piste
 ldf = LogDensityFunction(model, layout, store, AutoPBForwardDiff(); θ0=θ0)
 ```
 
-`chunk` is the number of directional derivatives computed per pass, so a
-`K`-parameter gradient costs `ceil(K/chunk)` model evaluations. It is a **type
-parameter, not a field** — that is deliberate and is a large part of why this
-trims: the chunk width, and therefore every tuple size in the hot loop, is known
-at compile time. 8 is a good default on current hardware (four Float64 lanes ×
-two, matching common SIMD widths); very small models can be faster with 4.
-
-Choosing between backends:
-
-- **Want a trimmed standalone binary?** This is currently the only option that
-  works. ForwardDiff builds with zero verifier errors and then dies at runtime;
-  Mooncake and Enzyme need the Julia compiler inside the binary.
-- **Otherwise, and `K` is large?** Use `AutoMooncake()` or `AutoEnzyme()`.
-  This is forward mode: cost grows with the parameter count, and around K=200
-  reverse mode is roughly 20× faster.
-- **Otherwise, and `K` is small?** Any of them; this is within ~15% of
-  ForwardDiff and agrees with it to the last bit.
-
-Float32 works: the dual is generic in its element type, so a `Float32` `θ0`
-propagates without promoting.
+A gradient over `K` parameters costs `ceil(K / chunk)` model evaluations, so
+for models with many parameters a reverse-mode backend is faster. Float32
+parameters stay Float32.
 """
 struct AutoPBForwardDiff{C} end
 

@@ -32,20 +32,19 @@
 
 abstract type SaveDisposition end
 
-"Retain this variable's per-sweep value in the returned chain (the default)."
+"Keep the variable's draws in the chain: `:chain` in `save_states`, the default."
 struct SaveToChain <: SaveDisposition end
 
-"Keep the value live for conditioning but omit it from the chain and disk."
+"Leave the variable's draws out of the chain and write them nowhere: `:buffer` in `save_states`."
 struct SaveToBuffer <: SaveDisposition end
 
 """
-Keep the value live, and write buffered draws to disk every `every` sweeps.
+    SaveToDisk(path, every)
 
-Each flush is written to its OWN file — never appended to a growing one — so no
-single file ever has to hold (or be re-read into) the whole run, and a crash
-loses at most the last unflushed `every` sweeps. `path` is a template: the
-`iters_x_to_y` range of each flush is spliced in before the extension, so
-`"X.jld2"` becomes `"X_iters_1_to_100.jld2"`, `"X_iters_101_to_200.jld2"`, ....
+Omit the value from the chain and write its draws to disk every `every`
+sweeps, one file per write: `"X.jld2"` becomes `"X_iters_1_to_100.jld2"`,
+`"X_iters_101_to_200.jld2"`, and so on. Written as `(path, every)` in
+`save_states`.
 """
 struct SaveToDisk <: SaveDisposition
     path::String
@@ -117,11 +116,9 @@ _retained_in_chain(save_states::NamedTuple, name::Symbol) =
     write_state_chunk!(disp::SaveToDisk, name::Symbol, chunk::AbstractVector,
                        first_iter::Integer, last_iter::Integer)
 
-Write `chunk` — the buffered per-sweep values of variable `name` for sweeps
-`first_iter:last_iter`, in order — to its OWN file, named via
-[`chunk_path`](@ref)`(disp.path, first_iter, last_iter)`. Never appends to a
-previous flush's file. Dispatches through `_WRITE_STATE_CHUNK_HOOK`, which a
-backend extension (JLD2) fills in; unset, it errors with instructions.
+Write the draws `chunk` of variable `name` for sweeps `first_iter:last_iter` to
+a new file. Called by [`sample`](@ref) for a [`SaveToDisk`](@ref) variable.
+`using JLD2` provides the writer; without a backend it throws.
 """
 write_state_chunk!(disp::SaveToDisk, name::Symbol, chunk::AbstractVector,
                    first_iter::Integer, last_iter::Integer) =
@@ -137,17 +134,11 @@ const _WRITE_STATE_CHUNK_HOOK = Ref{Any}(
 """
     read_states(template::AbstractString) -> Vector
 
-Read back every per-sweep value streamed by
-`sample(...; save_states = (name = (template, every),))`, across all its
-per-flush files, stitched into one vector in sweep order. `template` is the same
-path template passed to `save_states` (e.g. `"X.jld2"`); the reader discovers the
-`*_iters_x_to_y.*` files itself and orders them by first iteration.
+Read every draw written by `save_states = (name = (template, every),)` into one
+vector, in sweep order. Needs `using JLD2`.
 
-Note this materialises the whole run in memory — the point of streaming was to
-avoid that during sampling, so for a large latent prefer reading one flush file
-at a time (each is an ordinary file the backend can open directly). Dispatches
-through `_READ_STATES_HOOK`, filled in by the same backend extension that wrote
-the files.
+This loads the whole run into memory. Each file can also be opened on its own
+with JLD2.
 """
 read_states(template::AbstractString) = _READ_STATES_HOOK[](template)
 

@@ -23,41 +23,28 @@ using Distributions: Beta, Dirichlet
 """
     ConjugateGibbs(name, family, prior, count; n=nothing, collect=identity)
 
-An `AbstractGibbsKernel` (see [`gibbs_step`](@ref)) that resamples the Gibbs
-block `name` from its conjugate full conditional. Once per sweep it calls the
-user's `count` function to get the sufficient statistics, adds the `prior`
-hyperparameters, and draws from the resulting posterior in `family`.
+A Gibbs kernel that draws the block `name` from a conjugate Beta or Dirichlet
+full conditional: the `prior` hyperparameters plus counts returned by `count`.
 
-Arguments:
+# Arguments
+- `name`: the block's variable.
+- `family`: `:beta` or `:dirichlet`.
+- `prior`: `(a, b)` for `:beta`, a concentration vector for `:dirichlet`.
+- `count`: `count(c)` returns the counts given the
+  [`ModelConditional`](@ref) `c`: `(successes, failures)` for `:beta`, a vector
+  of category counts for `:dirichlet`.
+- `n`: for `n` independent draws (one per group, say), `count(c, k)` is called
+  for each `k in 1:n`.
+- `collect`: with `n`, turns the vector of draws into the block's value.
 
-- `name::Symbol` — the block this kernel owns and returns.
-- `family::Symbol` — `:beta` or `:dirichlet` (the conjugate posterior family).
-- `prior` — the prior hyperparameters: `(a, b)` for `:beta`, a concentration
-  vector for `:dirichlet`.
-- `count` — the sufficient-statistics closure. Its arity depends on `n`:
-    * `n === nothing` (a single draw): `count(c) -> counts`, where `c` is the
-      [`ModelConditional`](@ref) and `counts` is `(successes, failures)` for
-      `:beta` or a category-count vector for `:dirichlet`.
-    * `n::Integer` (one independent draw per index `1:n`): `count(c, k) -> counts`
-      for each `k`, same `counts` shape; the `n` draws are assembled by `collect`.
-- `n` — `nothing` for one scalar draw, or the number of independent conjugate
-  draws to make (e.g. one per group/season/time).
-- `collect` — for the `n`-draw form, maps the `Vector` of per-index draws to the
-  block's returned value (default: the vector itself). Ignored when `n === nothing`.
-
-The `count` closure does all model-specific work; this kernel does not touch
-`c.values` or `c.model.args` itself, so it imposes no assumptions about the model.
-
-# Example — a conjugate Beta update for a success probability `p`, where the data
-# are `n` Bernoulli trials passed as a model argument `y`:
+The prior in the model should match `prior`; the kernel does not read it.
 
 ```julia
-k = ConjugateGibbs(:p, :beta, (1, 1)) do c   # `do` passes the count closure
-    y = c.model.args.y
-    s = count(==(1), y)
-    (s, length(y) - s)
+pk = ConjugateGibbs(:p, :beta, (1, 1)) do c
+    s = count(c.values.z)
+    (s, length(c.values.z) - s)
 end
-# ... spl = Gibbs(:p => k, :other => NUTS(0.8))
+spl = Gibbs(:p => pk, :μ => NUTS(0.8), :z => AllocationKernel())
 ```
 """
 struct ConjugateGibbs{C,P,L} <: AbstractGibbsKernel

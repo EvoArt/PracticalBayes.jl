@@ -33,10 +33,10 @@
 
 Draws and diagnostics from [`static_nuts`](@ref) or [`static_hmc`](@ref).
 
-`draws` is `n_params x n_draws`. Divergences and acceptance are reported
-separately for warmup and sampling: warmup divergences are expected while dual
-averaging walks the step size down, and only `n_divergent` (post-warmup) bears
-on whether the draws can be trusted.
+Fields: `draws` (`n_params × n_draws`, unconstrained), `logp`, `step_size`,
+`inv_mass`, `n_divergent` and `accept_rate` after warm-up,
+`n_divergent_warmup` and `accept_rate_warmup` during it, and `mean_depth`
+(NUTS tree depth; `0.0` for [`static_hmc`](@ref)).
 """
 struct StaticHMCResult
     draws::Matrix{Float64}

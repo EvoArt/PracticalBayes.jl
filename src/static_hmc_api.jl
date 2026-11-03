@@ -5,17 +5,17 @@
 """
     static_nuts(gradf!, x0, n_draws, n_warmup; delta=0.8, seed=1)
 
-Multinomial NUTS with a diagonal metric, dual-averaged step size and Welford
-variance adaptation, implemented with no dependencies so it survives
-`juliac --trim`. Same algorithm AdvancedHMC runs.
+NUTS with a diagonal metric, adapting the step size towards acceptance rate
+`delta` and the metric during `n_warmup` iterations. Written without
+dependencies so that it compiles under `juliac --trim`.
 
-`gradf!(g, x)` fills `g` with the gradient of the log density at `x` and returns
-the log density. Supplying the gradient rather than deriving it is deliberate:
-AD is the other thing trim cannot compile (`GradientConfig`, and the per
-call-site `Dual` tag types, are unresolved), so a trimmed program should carry
-an analytic or generated gradient.
+`gradf!(g, x)` must write the gradient of the log density at `x` into `g` and
+return the log density. Warm-up draws are discarded. Returns a
+[`StaticHMCResult`](@ref).
 
-Warmup draws are discarded. Returns a [`StaticHMCResult`](@ref).
+!!! warning
+    Its draws are currently too widely spread on low-dimensional targets. Use
+    [`static_hmc`](@ref) until this is fixed.
 """
 function static_nuts(gradf!::F, x0::Vector{Float64}, n_draws::Int,
                      n_warmup::Int; delta::Float64=0.8, seed::Int=1) where {F}
@@ -147,23 +147,18 @@ function static_nuts(gradf!::F, x0::Vector{Float64}, n_draws::Int,
 end
 
 """
-    static_hmc(gradf!, x0, inv_mass, eps, L, n_draws, n_warmup; seed=1)
+    static_hmc(gradf!, x0, inv_mass, eps, L, n_draws, n_warmup; seed=1, jitter=true)
 
-Fixed-trajectory-length HMC with a diagonal metric. Nothing is adapted: `eps`,
-`L` and `inv_mass` are taken as given, which is the point — tune once (with
-[`static_nuts`](@ref), or offline) and then every run costs exactly `L` gradient
-evaluations per draw.
+HMC with a fixed diagonal inverse metric `inv_mass`, step size `eps` and up to
+`L` leapfrog steps, written without dependencies so that it compiles under
+`juliac --trim`. Nothing is adapted, so choose `eps`, `L` and `inv_mass`
+beforehand, for example by running it under the JIT and checking
+`n_divergent` and `accept_rate`.
 
-`n_warmup` draws are discarded but adapt nothing; they only let the chain reach
-the typical set from `x0`.
-
-The trajectory length is jittered uniformly in `[1, L]` by default (`jitter=true`).
-A fixed L can resonate with a periodic posterior and return close to its starting
-point; Neal (2011) sec. 4.2 recommends jittering, and it costs nothing on average
--- in fact it *saves*, averaging `(L+1)/2` gradient evaluations per draw rather
-than `L`. Pass `jitter=false` for a strictly fixed `L` trajectory every iteration
-(e.g. when you want an exactly predictable per-draw cost, or are reproducing a
-fixed-length reference).
+`gradf!` is as for [`static_nuts`](@ref). The first `n_warmup` draws are
+discarded. With `jitter=true` the step count is drawn from `1:L` each
+iteration; `jitter=false` always takes `L`. Returns a
+[`StaticHMCResult`](@ref).
 """
 function static_hmc(gradf!::F, x0::Vector{Float64}, inv_mass::Vector{Float64},
                     eps::Float64, L::Int, n_draws::Int, n_warmup::Int;
@@ -243,12 +238,9 @@ end
 """
     static_gradient(ldf) -> gradf!
 
-Wrap a `LogDensityFunction` as the `gradf!(g, x)` closure the static samplers
-expect, using whatever AD backend `ldf` was built with.
-
-Convenient for checking a static sampler against `sample()` on the same model,
-but NOT for a trimmed binary: it pulls AD back in, which is one of the two
-things trim cannot compile. A compiled program should pass its own gradient.
+Wrap a [`LogDensityFunction`](@ref) with a gradient as the `gradf!(g, x)`
+function the static samplers take. Useful for running them from Julia; a
+trimmed binary should supply its own gradient instead.
 """
 function static_gradient(ldf)
     return function (g::Vector{Float64}, x::Vector{Float64})

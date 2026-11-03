@@ -27,10 +27,10 @@
 """
     DependsReport
 
-The result of [`check_depends`](@ref). `ok` is the headline: `true` when no
-block's gradient changed. `rows` holds one entry per checked block with the
-worst absolute gradient discrepancy found and, when non-zero, the model
-variables that are the likely culprits.
+The result of [`check_depends`](@ref). `ok` is `true` when every block's
+gradient matched. `rows` has one entry per HMC block: the largest gradient
+difference and, if non-zero, the variables likely missing from a `depends`
+list.
 """
 struct DependsReport
     ok::Bool
@@ -63,36 +63,20 @@ end
     check_depends(model, spl::Gibbs; init=NamedTuple(), adtype=AutoForwardDiff(),
                   rng=Random.default_rng(), atol=0.0, verbose=true) -> DependsReport
 
-Verify that every `depends=` annotation in `model` is safe under the blocking
-`spl`, by comparing each HMC-family block's gradient with the model as written
-against the same gradient computed with no term skipped. They must agree
-exactly; any difference means a term that DOES affect the block is being
-skipped, i.e. an under-declared `depends=`.
+Check the `depends=` annotations of [`@addlogprob!`](@ref) in `model` under the
+blocks of `spl`. For each HMC block, the gradient with terms skipped is
+compared with the gradient with nothing skipped; any difference means a
+`depends` list is missing a variable.
 
-This is the check for the one hazard `depends=` carries. Over-declaring is
-harmless -- it only forgoes a speed-up -- and is not reported as a failure.
-
-Returns a [`DependsReport`](@ref); `report.ok` is `false` if any block
-mismatched. Kernel blocks are skipped: they never build a `LogDensityFunction`
-and never touch AD, so there is no gradient to compare.
-
-`atol` exists only for backends whose gradients are not bit-reproducible across
-two calls; leave it at `0.0` unless you have a concrete reason, since a genuine
-under-declaration is usually far larger than any tolerance.
-
-# Example
+Returns a [`DependsReport`](@ref); `report.ok` is `false` on a mismatch. The
+check runs at one point, the starting values or `init`, so for a model whose
+dependencies change with the parameters run it at several. Leave `atol` at
+`0.0` unless the AD backend is not deterministic.
 
 ```julia
-spl = Gibbs((:a, :b) => NUTS(0.8), :z => MyKernel())
 report = check_depends(model, spl)
-report.ok || error("bad depends= annotation")
+report.ok || error("a depends= annotation is incomplete")
 ```
-
-Note this checks the annotations AT ONE POINT in parameter space -- the initial
-values, or `init` if given. A dependency that happens to be inactive there (a
-term multiplied by a parameter that starts at zero, a branch not taken) would
-pass. Run it at more than one `init` for a model with regime-dependent
-structure.
 """
 function check_depends(
     model::Model,

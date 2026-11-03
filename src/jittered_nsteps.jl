@@ -10,57 +10,13 @@ using Random: Random, AbstractRNG
 """
     JitteredNSteps(L)
 
-Termination criterion for a static HMC trajectory whose length is redrawn
-uniformly from `1:L` at every iteration, instead of being pinned at `L`.
+AdvancedHMC termination criterion for a fixed-length trajectory whose step
+count is drawn uniformly from `1:L` at each iteration. A drop-in replacement for
+`FixedNSteps(L)` in a `Trajectory{EndPointTS}`. It avoids a fixed trajectory
+length resonating with the posterior, and costs `(L + 1) / 2` steps per
+iteration on average.
 
-This is the drop-in sibling of AdvancedHMC's own `FixedNSteps`: it plugs into
-exactly the same `Trajectory{EndPointTS}` kernel, so a sampler opts in by
-swapping which of the two it constructs and changes nothing else.
-
-# Why jitter at all
-
-A trajectory of *fixed* length can resonate with a periodic posterior — after
-`L` steps the sampler keeps landing near where it started, and the chain crawls.
-Redrawing the length each iteration breaks that periodicity. Neal (2011,
-sec. 4.2) recommends it as standard practice for static HMC. It is also free on
-average: a uniform draw from `1:L` costs `(L+1)/2` gradient evaluations per
-iteration rather than `L`, so a jittered run is roughly *half* the work of a
-fixed-`L` one (which is why you may want a larger `L` when you turn it on, not
-the same one).
-
-# Why the drawn value is stored in the struct
-
-AdvancedHMC's static-trajectory `transition` calls `nsteps(τ)` **twice** per
-iteration: once inside `sample_phasepoint` to actually integrate, and once more
-when it assembles the `n_steps` entry of the transition's stats NamedTuple.
-Neither call site is handed an RNG. So `nsteps` cannot itself be the random
-draw — it would (a) have no RNG to draw from, and (b) return two *different*
-values within one iteration, integrating one trajectory length while reporting
-another in the diagnostics.
-
-Instead the draw happens once, in the one place that does have the RNG (the
-`transition` method below), and is cached in this mutable field. Both `nsteps`
-calls then read that same value, so the reported `n_steps` is always the
-trajectory that was really simulated.
-
-Mutating a field of the sampler's own criterion object is safe here because a
-`Trajectory` is rebuilt per chain, so two chains sampling in parallel (threaded
-or otherwise) each hold their own `JitteredNSteps` and never share this slot.
-This "nominal value + current draw" layout is also exactly how AdvancedHMC's own
-`JitteredLeapfrog` carries its jittered step size, so it is the library's
-existing idiom rather than a workaround.
-
-Note that `JitteredLeapfrog` jitters the step size `\u03f5` while holding the step
-*count* fixed; this type does the opposite. They are independent and can be
-combined.
-
-# Correctness
-
-Detailed balance is preserved because the step count is drawn **independently of
-the current state** — it depends only on the RNG, never on `z`. That is the
-condition Neal's argument needs: the trajectory length is part of the proposal
-mechanism, not a function of where the chain currently is, so the usual
-Metropolis correction on the end point remains valid unchanged.
+[`AdaptiveHMC`](@ref) and [`NUTSthenHMC`](@ref) use it when `jitter=true`.
 """
 mutable struct JitteredNSteps <: StaticTerminationCriterion
     "Maximum number of leapfrog steps; each iteration draws uniformly from `1:L`."

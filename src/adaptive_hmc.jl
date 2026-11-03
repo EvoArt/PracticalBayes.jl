@@ -12,41 +12,20 @@ using AdvancedHMC.Adaptation: StanHMCAdaptor, MassMatrixAdaptor, StepSizeAdaptor
 """
     AdaptiveHMC(δ=0.8; n_leapfrog=10, kwargs...)
 
-A fixed-trajectory-length HMC sampler that **adapts its mass matrix and step size
-during warm-up**, exactly the way NUTS does, and then holds both fixed for the
-sampling phase.
+Fixed-length HMC that adapts its step size and metric during the first
+`n_adapts` iterations, as NUTS does, targeting acceptance rate `δ`. Every
+iteration takes `n_leapfrog` leapfrog steps.
 
-This is the sibling of [`NUTSthenHMC`](@ref): both give you a plain HMC sampler
-whose per-iteration cost is a constant `n_leapfrog` leapfrog steps, with a
-NUTS-quality metric and step size underneath. The difference is *which* sampler
-runs the warm-up. `NUTSthenHMC` uses NUTS' tree-doubling to also *choose*
-`n_leapfrog` for you, at the cost of an unpredictable warm-up. `AdaptiveHMC`
-never doubles a tree at all — every iteration, warm-up included, is exactly
-`n_leapfrog` leapfrog steps — so you must supply the trajectory length yourself,
-but the whole run has a flat, predictable cost. Reach for this when you already
-know a good `n_leapfrog` (e.g. from a prior `NUTSthenHMC` run, or a `Gibbs` block
-you want to keep cheap and constant-time).
+# Keywords
+- `n_leapfrog`: leapfrog steps per iteration.
+- `jitter`: draw the step count uniformly from `1:n_leapfrog` each iteration.
+- `metric`: `:diagonal` (default), `:dense`, `:unit`, or an AdvancedHMC metric.
+- `adapt`: `:full` adapts the metric and step size; `:step_size` keeps the
+  metric and adapts only the step size (see [`warm_start`](@ref)).
 
-Adaptation is AdvancedHMC's `StanHMCAdaptor` — Welford mass-matrix estimation
-plus Nesterov dual-averaging on the step size targeting acceptance rate `δ` —
-identical to what `NUTS(δ)` builds. It runs for the first `n_adapts` iterations
-and then switches off, leaving the learned diagonal metric and step size in
-place. (Plain `AdvancedHMC.HMC` adapts *nothing* — its `make_adaptor` returns
-`NoAdaptation()` — which is the gap this sampler fills.)
-
-`metric` (`:diagonal`/`:dense`/`:unit` or an `AbstractMetric`), `integrator`,
-and `init_ϵ` mean what they do for `AdvancedHMC.NUTS`; a `:diagonal` metric and a
-step-size search are the defaults. As with every HMC sampler here, `n_adapts` is
-passed at the `sample` call, and the warm-up draws stay in the chain unless you
-slice them off:
-
-    chn = sample(model, AdaptiveHMC(0.8; n_leapfrog=16), 2000; n_adapts=1000)
-
-`adapt` says what the warm-up learns. `:full` (the default) learns the metric and
-the step size. `:step_size` keeps the metric it is given and tunes only the step
-size, which is what a run started from an earlier run's metric wants: the
-windowed metric estimate would otherwise start again from a handful of draws.
-See [`warm_start`](@ref).
+```julia
+chn = sample(model, AdaptiveHMC(0.8; n_leapfrog=16), 2000; n_adapts=1000)
+```
 """
 struct AdaptiveHMC{T<:Real,I,M} <: AbstractHMCSampler
     "Target acceptance rate for step-size dual averaging."

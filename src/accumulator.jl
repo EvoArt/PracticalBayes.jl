@@ -1,14 +1,11 @@
 """
     Accum{T<:Real}
 
-Immutable log-density accumulator threaded through model evaluation.
-Split into prior (includes bijector log-|det J|) and likelihood parts so that
-`logprior`, `loglikelihood`, and `logjoint` can all be read off cheaply, matching
-DynamicPPL's accumulator split without the per-statement NamedTuple rebuild.
+The log density accumulated while a model runs, kept as two fields:
+`logprior` (including the log-Jacobian of any transform) and `loglik`.
 
-Being immutable (rather than mutable-struct or Ref) keeps every tilde site a pure
-function `Accum -> Accum`, which is what makes the hot path AD- and GPU-friendly:
-no aliasing, no heap mutation, trivially handled by ForwardDiff/Mooncake/Enzyme.
+`Accum(0.0)` starts both at zero. Read the totals with [`logprior`](@ref),
+[`loglikelihood_`](@ref) and [`logjoint`](@ref).
 """
 struct Accum{T<:Real}
     logprior::T
@@ -33,9 +30,7 @@ Accum(logprior, loglik) = Accum(promote(logprior, loglik)...)
 """
     logprior(a::Accum)
 
-The accumulated log-prior density (sum of `logpdf` + bijector log-|det J| over
-every assume site seen so far). See also [`logprior(model, nt)`](@ref) for the
-whole-model, named-tuple-argument version built on top of this.
+The log-prior accumulated in `a`.
 """
 @inline logprior(a::Accum) = a.logprior
 
@@ -46,17 +41,16 @@ whole-model, named-tuple-argument version built on top of this.
 """
     loglikelihood_(a::Accum)
 
-The accumulated log-likelihood (sum of `logpdf` over every observe site seen so
-far). Trailing underscore avoids colliding with `Base`/`StatsAPI`'s exported
-`loglikelihood`. See also [`loglikelihood_at`](@ref) for the whole-model version.
+The log-likelihood accumulated in `a`. The trailing underscore avoids a clash
+with `Distributions.loglikelihood`. For a model at a point, use
+[`loglikelihood_at`](@ref).
 """
 @inline loglikelihood_(a::Accum) = a.loglik
 
 """
     logjoint(a::Accum)
 
-`logprior(a) + loglikelihood_(a)` — the full log-joint density accumulated so
-far. See also [`logjoint(model, nt)`](@ref) for the whole-model version.
+`logprior(a) + loglikelihood_(a)`.
 """
 @inline logjoint(a::Accum) = a.logprior + a.loglik
 

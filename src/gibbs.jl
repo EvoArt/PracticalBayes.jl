@@ -30,22 +30,26 @@ end
 """
     Gibbs(pairs::Pair...)
 
-A block-wise Gibbs sampler: `Gibbs(:theta => NUTS(0.8), :z => PG(20))`.
-Each `Pair`'s left side is a `Symbol` or `Tuple{Vararg{Symbol}}` naming the
-block's model variables; the right side is either
+A Gibbs sampler that updates blocks of variables in turn, once each per sweep.
 
-- an AbstractMCMC sampler for continuous variables: NUTS/HMC/HMCDA from
-  AdvancedHMC, or any other sampler that works on an
-  `AbstractMCMC.LogDensityModel` and implements `AbstractMCMC.getparams` and
-  `AbstractMCMC.setparams!!` (e.g. AdvancedMH's `RWMH`); or
-- an `AbstractGibbsKernel`, for discrete or otherwise non-differentiable
-  variables: [`PG`](@ref), [`ConjugateGibbs`](@ref), or a user's own kernel.
+Each pair maps a variable name, or a tuple of names, to the sampler for that
+block:
 
-Every assumed variable in the model must appear in EXACTLY one
-block — checked (with a clear error naming any missing/duplicated name) the
-first time `AbstractMCMC.step` runs against a concrete model, since `Gibbs`
-itself is constructed without a model reference (matching how a plain
-`NUTS(0.8)` is also model-agnostic until it's actually used to sample).
+- an HMC sampler (`NUTS`, `HMC`, [`AdaptiveHMC`](@ref),
+  [`NUTSthenHMC`](@ref)) or another AbstractMCMC sampler that works on a log
+  density, which takes one step on the block's continuous parameters with every
+  other variable held fixed;
+- a Gibbs kernel ([`PG`](@ref), [`ConjugateGibbs`](@ref) or your own
+  [`AbstractGibbsKernel`](@ref)), which draws the block's new values directly.
+
+Every parameter of the model must be in exactly one block, and discrete
+parameters need a Gibbs kernel. Run it with [`sample`](@ref); pass `n_adapts`
+there and keep it the same for the whole run.
+
+```julia
+spl = Gibbs((:α, :β) => NUTS(), :p => pk, :z => AllocationKernel())
+chn = sample(model, spl, 1000; n_adapts=500, discard_initial=500)
+```
 """
 struct Gibbs{P<:Tuple{Vararg{GibbsBlock}}} <: AbstractMCMC.AbstractSampler
     blocks::P
@@ -89,11 +93,10 @@ struct GibbsKernelSub end
 """
     GibbsState(values, subs)
 
-`values`: the current constrained-space value of EVERY assumed model
-variable (all blocks merged into one NamedTuple) — this is also what a
-Gibbs sweep returns as its transition. `subs`: a `Tuple`, same length/order
-as the owning `Gibbs`'s `blocks`, of each block's persistent
-`GibbsSamplerSub`/`GibbsKernelSub`.
+The state of a [`Gibbs`](@ref) sampler between sweeps, as returned by
+`AbstractMCMC.step`. `values` holds the current value of every parameter;
+`subs` holds each block's sampler state. Read the HMC tuning from it with
+[`hmc_tuning`](@ref).
 """
 struct GibbsState{V<:NamedTuple,C<:Tuple}
     values::V
@@ -219,11 +222,9 @@ end
 """
     AbstractMCMC.step(rng, model::Model, spl::Gibbs; init=NamedTuple(), adtype=AutoForwardDiff(), kwargs...)
 
-First call: validates block coverage, draws (or takes from `init`) a
-starting value for every assumed variable, builds each sampler block's
-`Layout` once, and takes the first sweep. `adtype` is used for every HMC
-block uniformly (per-block AD backends are not yet supported — a natural
-later extension, not needed for the M3 gates).
+Take the first Gibbs sweep. Checks that every parameter is in exactly one
+block, starts from `init` or the prior, and returns `(values, state)`. Every
+HMC block uses the same `adtype`.
 """
 function AbstractMCMC.step(rng::Random.AbstractRNG, model::Model, spl::Gibbs; init=NamedTuple(), adtype=AutoForwardDiff(), kwargs...)
     records = _validate_gibbs_coverage(model, spl, rng)
@@ -236,17 +237,11 @@ end
 """
     AbstractMCMC.step(rng, model::Model, spl::Gibbs, state::GibbsState; n_adapts=0, kwargs...)
 
-Perform one Gibbs sweep: a systematic-scan pass over `spl.blocks` in
-declaration order. A kernel block calls `gibbs_step` once; a sampler (HMC)
-block conditions on the current values of every other block and takes one
-HMC step. Gibbs kernels are never invoked inside a gradient or leapfrog step.
+Take one Gibbs sweep: update each block in the order given to [`Gibbs`](@ref).
+Returns `(values, state)`.
 
-Pass `n_adapts` as its final target value on every call, from the first sweep
-onward — do not ramp it up (e.g. `min(sweep, 500)`). AdvancedHMC's windowed
-adaptor fixes its adaptation-window schedule from the `n_adapts` given on a
-block's first step; a small value there disables step-size and mass-matrix
-adaptation for the block's entire run, producing a poorly-mixing chain with no
-error.
+Pass the same `n_adapts` on every call, starting with the first: the
+adaptation schedule is fixed from the value given then.
 """
 function AbstractMCMC.step(rng::Random.AbstractRNG, model::Model, spl::Gibbs, state::GibbsState; n_adapts::Int=0, kwargs...)
     values = state.values

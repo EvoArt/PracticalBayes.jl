@@ -4,35 +4,22 @@ using AdvancedHMC:
 """
     NUTSthenHMC(δ=0.8; n_leapfrog=nothing, kwargs...)
 
-An HMC sampler that runs **NUTS during warm-up and plain HMC afterwards**,
-inheriting everything NUTS adapted: the mass matrix (metric), the step size, and
-the integrator.
+An HMC sampler that runs NUTS for the first `n_adapts` iterations and then
+fixed-length HMC with the metric and step size NUTS adapted. Each draw after
+warm-up then costs the same number of gradient evaluations, which keeps the
+sweeps of a [`Gibbs`](@ref) sampler even.
 
-The motivation is that NUTS' tree-doubling is what makes warm-up robust — it
-finds a sensible trajectory length without being told one — but after adaptation
-that same doubling costs an unpredictable, sometimes large number of gradient
-evaluations per draw. Once the metric and step size have settled, a fixed number
-of leapfrog steps gives a constant, predictable cost per iteration, which is
-often faster in wall-clock terms for the same effective sample size (and is what
-makes the per-draw cost usable in a `Gibbs` sweep, where a runaway NUTS tree in
-one block stalls the whole sweep).
+# Keywords
+- `n_leapfrog`: leapfrog steps per iteration after warm-up. `nothing` takes
+  `2^d - 1`, where `d` is the median NUTS tree depth during warm-up.
+- `jitter`: draw the step count uniformly from `1:n_leapfrog` each iteration.
+- Others (`metric`, `max_depth`, ...) are passed to `AdvancedHMC.NUTS`.
 
-`n_leapfrog` is the fixed step count used after warm-up. Leave it `nothing`
-(the default) to pick it from what NUTS actually did: the median tree depth over
-the adaptation phase, `n = 2^depth - 1`, clamped to `[1, 2^max_depth - 1]`. Pass
-an integer to fix it yourself.
+`n_adapts` must be given to [`sample`](@ref).
 
-All other keyword arguments (`metric`, `integrator`, `max_depth`, `Δ_max`,
-`init_ϵ`) are forwarded to the underlying `AdvancedHMC.NUTS` and so mean exactly
-what they do there.
-
-Use it like any other sampler; the switch happens at iteration `n_adapts`, so
-that argument is not optional here:
-
-    chn = sample(model, NUTSthenHMC(0.8), 2000; n_adapts=1000)
-
-Note that with `discard_initial` unset, AbstractMCMC keeps the warm-up draws in
-the chain as usual — pass `discard_initial=n_adapts` to drop them.
+```julia
+chn = sample(model, NUTSthenHMC(0.8), 2000; n_adapts=1000)
+```
 """
 struct NUTSthenHMC{T<:Real,I,M} <: AbstractHMCSampler
     "The wrapped NUTS sampler used for the whole warm-up phase."

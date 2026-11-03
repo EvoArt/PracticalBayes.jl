@@ -27,11 +27,8 @@ using UUIDs: uuid4
 
 Whether [`sample`](@ref) shows a progress meter when `progress` is not passed.
 
-`true` at an interactive REPL/IDE session, `false` otherwise — so scripts, CI
-and test suites (whose output is usually redirected to a file, where a live bar
-is just noise) stay quiet without having to pass `progress=false` everywhere.
-Honours the `CI` environment variable, which the major CI providers set.
-[`setprogress!`](@ref) overrides all of this for the rest of the session.
+`true` in an interactive session and `false` in scripts and when the `CI`
+environment variable is set, unless [`setprogress!`](@ref) has been called.
 """
 default_progress() = something(_PROGRESS_OVERRIDE[], isinteractive() && !haskey(ENV, "CI"))
 
@@ -41,9 +38,8 @@ const _PROGRESS_OVERRIDE = Ref{Union{Nothing,Bool}}(nothing)
 """
     setprogress!(progress::Bool)
 
-Turn the progress meter on or off for every later `sample` call that does not
-pass `progress=` itself, for the rest of the session — Turing's
-`setprogress!`. Without it, the meter follows [`default_progress`](@ref).
+Turn the progress meter on or off for every later [`sample`](@ref) call that
+does not pass `progress`, for the rest of the session.
 """
 function setprogress!(progress::Bool)
     _PROGRESS_OVERRIDE[] = progress

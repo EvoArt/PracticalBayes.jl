@@ -3,40 +3,44 @@ using ADTypes: ADTypes, AbstractADType
 import DifferentiationInterface as DI
 
 """
-    LogDensityFunction(model, layout, store, adtype)
+    LogDensityFunction(model, layout, store=NamedTuple(), adtype=nothing;
+                       θ0=zeros(layout.dim), reject_errors=false, closed_form=true)
 
-Implements the `LogDensityProblems` interface for a `Model` given a fixed
-`Layout` (from `build_layout`) and constant `store` (latents / other Gibbs
-blocks). `adtype === nothing` gives a `LogDensityOrder{0}` object (density
-only); otherwise gradients are attached via `DifferentiationInterface`
-directly (not `LogDensityProblemsAD`), matching current DynamicPPL practice.
+The log joint density of `model` as a function of the flat unconstrained
+vector `θ`, implementing the LogDensityProblems.jl interface. Values in `store`
+are held constant.
 
-Nothing here hardcodes `Float64`: `logdensity(f, θ)` computes in `eltype(θ)`,
-so a `Vector{Float32}` runs in Float32 (SIMD-friendly) and a `CuVector`
-computes on-device, provided the constituent `logpdf`/bijector calls used by
-the model support that type (a Distributions.jl-level property, not one this
-package restricts). `store` values are passed to the evaluator as-is and to
-the AD backend as `DI.Constant`, so they are never differentiated and never
-force a promotion of `θ`'s element type.
+# Arguments
+- `layout`, `store`: from [`build_layout`](@ref).
+- `adtype`: an ADTypes backend such as `AutoForwardDiff()` or `AutoMooncake()`,
+  [`AutoPBForwardDiff`](@ref), [`GradMode`](@ref), or `nothing` for the
+  density only.
 
-`reject_errors`: if `true`, any exception raised while evaluating the model
-body (e.g. a `logpdf` call hitting an out-of-support value during sampling)
-is caught and reported as `-Inf` density (with an all-zero gradient) instead
-of propagating — letting a sampler treat the draw as simply rejected rather
-than crashing the whole chain. Off by default so genuine bugs (e.g. a typo'd
-distribution argument) still fail loudly; turn it on once a model is known to
-be correct but can hit numerically-degenerate corners (e.g. a `Cholesky`
-factorization failing on an ill-conditioned covariance draw).
+# Keywords
+- `θ0`: a vector of the type you will evaluate at; the gradient is prepared for
+  its element type. Pass a `Float32` vector for a Float32 run.
+- `reject_errors`: treat an error inside the model as density `-Inf` instead of
+  throwing.
+- `closed_form`: use the closed-form gradient when the model is recognised (see
+  [`is_gradmode_compatible`](@ref)). Set `false` to force `adtype`. Ignored for
+  [`AutoPBForwardDiff`](@ref), which always uses Piste.
 
-A fully-positional inner constructor,
-`LogDensityFunction(model, layout, store, adtype, prep, reject_errors)`,
-reuses an already-prepared gradient tape/config against a new `store`. Gibbs
-(gibbs.jl) uses this to rebuild a sampler block's `LogDensityFunction` each
-sweep with an updated `store` (the other blocks' latest values) without
-re-running `DI.prepare_gradient`, which is expensive for tape-based backends.
-This is valid as long as `store`'s field-name set (and therefore its
-`NamedTuple` type) matches what `prep` was built against; only the values may
-change.
+Computation follows the element type of `θ`.
+
+```jldoctest
+julia> using LogDensityProblems, ADTypes
+
+julia> @model function demo()
+           μ ~ Normal(0, 1)
+       end;
+
+julia> layout, θ0, store0 = build_layout(demo());
+
+julia> f = LogDensityFunction(demo(), layout, store0, AutoForwardDiff(); θ0=θ0);
+
+julia> LogDensityProblems.logdensity_and_gradient(f, [1.0])
+(-1.4189385332046727, [-1.0])
+```
 """
 struct LogDensityFunction{M<:Model,L<:Layout,S<:NamedTuple,AD,P}
     model::M
@@ -47,15 +51,6 @@ struct LogDensityFunction{M<:Model,L<:Layout,S<:NamedTuple,AD,P}
     reject_errors::Bool
 end
 
-"""
-    LogDensityFunction(model, layout, store=NamedTuple(), adtype=nothing;
-                        θ0=zeros(Float64, layout.dim), reject_errors=false)
-
-`θ0` is used only to fix the element type and shape that `DifferentiationInterface`
-prepares its gradient tape/config for (`DI.prepare_gradient`); pass a vector of
-the type you intend to sample with (e.g. `zeros(Float32, layout.dim)`) if it's
-not `Float64`.
-"""
 function LogDensityFunction(
     model, layout, store=NamedTuple(), adtype=nothing; θ0=zeros(Float64, layout.dim),
     reject_errors=false, closed_form=true

@@ -14,15 +14,16 @@
 """
     NUTS(δ=0.65; adtype=nothing, max_depth=10, Δ_max=1000.0, integrator=:leapfrog, metric=:diagonal)
 
-The No-U-Turn sampler with target acceptance rate `δ` (default 0.65, Turing's
-default). All keywords except `adtype` are AdvancedHMC's, and without `adtype`
-the result is AdvancedHMC's own `NUTS` sampler.
+The No-U-Turn sampler with target acceptance rate `δ`. Without `adtype` this is
+AdvancedHMC's `NUTS`, and the other keywords are passed to it.
 
-`adtype` chooses the AD backend for this sampler, as in Turing
-(`NUTS(; adtype=AutoMooncake())`). It is equivalent to passing `adtype=` to
-`sample`; inside [`Gibbs`](@ref) it sets the backend for that block alone.
+`adtype` sets the AD backend, e.g. `NUTS(; adtype=AutoMooncake())`; inside a
+[`Gibbs`](@ref) block it applies to that block alone. A Float32 `δ`
+(`NUTS(0.8f0)`) makes [`sample`](@ref) run in Float32.
 
-A Float32 `δ` (`NUTS(0.8f0)`) makes `sample` run in Float32.
+```julia
+chn = sample(model, NUTS(), 1000)
+```
 """
 function NUTS(δ::Real=0.65; adtype=nothing, kwargs...)
     spl = AdvancedHMC.NUTS(δ; kwargs...)
