@@ -261,7 +261,7 @@ purpose — this is NOT the same as `view(θ, range)`.
 
 `view` is overloadable, and some array types an AD backend hands us as `θ`
 overload it to return their own view type instead of a `Base.SubArray`.
-`PolyesterForwardDiff` is the case that bit us: when a model's parameter vector
+`PolyesterForwardDiff` is one such backend: when a model's parameter vector
 spans more than one chunk, it passes `θ` as a `StrideArraysCore.StrideArray`,
 so `view(θ, range)` is a `StrideArray` too. That breaks scalar parameters,
 because `Bijectors.VectorBijectors.OnlyWrap` — the length-1-vector-to-scalar
@@ -599,19 +599,11 @@ exactly the fix DynamicPPL's own `@model` applies internally, via a
 simpler equivalent our compiler can offer directly, reading the type off the
 mode rather than rewriting model arguments at construction time.
 
-KNOWN LIMITATION (allocation, not correctness): `container`'s declaration
-line reruns on every single `EvalMode` evaluation (every NUTS leapfrog
-step), so it reallocates fresh each time — for `n` on the order of
-thousands, expect on the order of `n * sizeof(eltype)` bytes/call (~8KB/call
-measured for a 1000-element `Float64` family). Caching/reusing this buffer
-was considered and deliberately NOT implemented: it would only help the
-no-gradient (order-0) path, since AD backends need a fresh
-Dual-typed/backend-specific buffer per call regardless, and NUTS always
-requests gradients — a cached buffer wouldn't touch the actual sampling hot
-path, while adding real complexity (thread-safety for `MCMCThreads`, cache
-invalidation). If this allocation matters for your model, prefer an array
-distribution via plain `~` (`product_distribution`, `MvNormal`) over an
-indexed `x[i] ~ dist` loop — those don't need a pre-declared container at all.
+The container is allocated again on every evaluation, about
+`n * sizeof(eltype)` bytes per call. Reusing it would only help density-only
+calls, since AD needs a fresh buffer of its own number type on each call. If
+the allocation matters, write the family as an array distribution with plain
+`~` (`product_distribution`, `MvNormal`), which needs no container.
 """
 @inline function tilde_index(m::EvalMode, ::Val{s}, container, idx::Tuple, dist, acc::Accum) where {s}
     # `idx` is whatever the user wrote inside `x[...]`, e.g. `(i,)` for a

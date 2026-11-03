@@ -442,8 +442,7 @@ end
 
 Add `expr` to the log-likelihood. Valid only inside an [`@model`](@ref) body.
 
-Use it for a log-density term that is not a `~` statement, such as a
-likelihood with a discrete latent summed out.
+Use it for a log-density term that is not a `~` statement.
 
 `depends` lists the model variables `expr` reads. A [`Gibbs`](@ref) HMC block
 that owns none of them then skips the term, which cannot change its gradient.

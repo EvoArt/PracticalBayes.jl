@@ -47,6 +47,7 @@ parameters need a Gibbs kernel. Run it with [`sample`](@ref); pass `n_adapts`
 there and keep it the same for the whole run.
 
 ```julia
+# `pk` and `AllocationKernel` as in the `ConjugateGibbs` and `gibbs_step` examples
 spl = Gibbs((:α, :β) => NUTS(), :p => pk, :z => AllocationKernel())
 chn = sample(model, spl, 1000; n_adapts=500, discard_initial=500)
 ```

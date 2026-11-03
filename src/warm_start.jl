@@ -9,10 +9,9 @@ entry per block: `nothing` for a kernel block, otherwise
 array (a `Matrix` for a dense metric, a `Vector` for a diagonal one, `nothing`
 for the unit metric).
 
-Plain arrays rather than AdvancedHMC objects, so the tuning serialises and can
-start a related run through [`warm_start`](@ref): the same model refitted to
-slightly different data needs little or no warm-up once it starts from a metric
-learnt on the first.
+The arrays can be saved and passed to [`warm_start`](@ref), so a related run,
+such as the same model refitted to slightly different data, can start from this
+tuning and need little warm-up.
 """
 function hmc_tuning(spl::Gibbs, state::GibbsState)
     length(state.subs) == length(spl.blocks) || throw(ArgumentError(

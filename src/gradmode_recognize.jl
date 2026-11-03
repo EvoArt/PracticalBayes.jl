@@ -857,8 +857,7 @@ parameter and the other pure data; anything else (param*param — nonlinear —
 or data*data — not a parameter term at all) is rejected.
 
 The parameter operand may be a bare name (`beta`) or a literal element of a
-parameter vector (`beta[2]`), the latter being the dominant corpus style
-(`beta[1] .+ beta[2] .* height`). `*` yields a `:matvec`, `.*` a `:scaled`.
+parameter vector (`beta[2]`), as in `beta[1] .+ beta[2] .* height`. `*` yields a `:matvec`, `.*` a `:scaled`.
 """
 function _gm_mul_term(op, l, r, params, argnames)
     # a parameter operand: `beta` or `beta[k]` with literal k

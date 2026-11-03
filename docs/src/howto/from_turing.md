@@ -14,7 +14,7 @@ Make three changes to the tutorial's code:
    element such as `chn[@varname(m[1])]` becomes `param_draws(chn, :m, 1)`.
 3. Replace `VNChain` with `SymChain` where a tutorial names the chain type.
 
-With only these changes, these tutorials run: linear regression, logistic
+With only these changes, these tutorials run (checked with Turing 0.49): linear regression, logistic
 regression, Poisson regression, multinomial logistic regression, time series
 analysis, coin flipping, Bayesian neural networks, differential equations,
 Gaussian processes (introduction) and probabilistic PCA.
@@ -69,7 +69,8 @@ See [Run a model in Float32](@ref).
 
 ### Using both packages at once
 
-PracticalBayes installs alongside current Turing, but many names, among them
+PracticalBayes installs alongside Turing (tested with Turing 0.49), but many
+names, among them
 `@model`, `NUTS`, `Gibbs`, `PG` and `filldist`, are exported by both. With both
 loaded, `import` one and qualify its names:
 

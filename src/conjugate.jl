@@ -44,7 +44,7 @@ pk = ConjugateGibbs(:p, :beta, (1, 1)) do c
     s = count(c.values.z)
     (s, length(c.values.z) - s)
 end
-spl = Gibbs(:p => pk, :μ => NUTS(0.8), :z => AllocationKernel())
+spl = Gibbs(:p => pk, :μ => NUTS(0.8), :z => AllocationKernel())   # see `gibbs_step`
 ```
 """
 struct ConjugateGibbs{C,P,L} <: AbstractGibbsKernel

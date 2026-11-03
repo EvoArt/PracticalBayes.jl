@@ -14,8 +14,8 @@ return the log density. Warm-up draws are discarded. Returns a
 [`StaticHMCResult`](@ref).
 
 !!! warning
-    Its draws are currently too widely spread on low-dimensional targets. Use
-    [`static_hmc`](@ref) until this is fixed.
+    Its draws are too widely spread on low-dimensional targets; use
+    [`static_hmc`](@ref) instead.
 """
 function static_nuts(gradf!::F, x0::Vector{Float64}, n_draws::Int,
                      n_warmup::Int; delta::Float64=0.8, seed::Int=1) where {F}

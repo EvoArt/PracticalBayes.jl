@@ -30,8 +30,7 @@ mean(chn[:beta])
 ```
 
 The data were simulated with `beta = [1, -1, 0.5]`. Sampling runs in Float32,
-but a bounded scalar such as `sigma` is currently reported in the chain as
-`Float64`.
+but a bounded scalar such as `sigma` is reported in the chain as `Float64`.
 
 To evaluate the log density and its gradient in Float32 yourself, build the
 layout with `T=Float32`:

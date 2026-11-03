@@ -33,9 +33,9 @@ end
 """
     paramtype(mode) -> Type{<:Real}
 
-The number type parameters currently have: the element type of the parameter
-vector under [`EvalMode`](@ref) (`Float64`, `Float32`, or an AD number type
-during a gradient), and `Float64` in every other mode.
+The number type of the parameters in the current evaluation: the element type
+of the parameter vector under [`EvalMode`](@ref) (`Float64`, `Float32`, or an
+AD number type during a gradient), and `Float64` in every other mode.
 
 Use it inside a model body, as `paramtype(__mode__)`, wherever the model
 creates an array that will hold parameter values or that sets the precision of

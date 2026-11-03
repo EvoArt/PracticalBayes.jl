@@ -146,8 +146,9 @@ parameters to that draw and draw each observed variable that has no data.
 Returns a chain of the predicted variables, with the same iterations and chains
 as `chn`; `include_all=true` adds the parameters.
 
-Free the observations by passing missing data,
-`predict(linreg(x_new, fill(missing, n)), chn)`, or by removing conditioning,
+Free the observations by passing missing data, as in
+`predict(model_fn(x_new, fill(missing, n)), chn)` for a model function
+`model_fn(x, y)` that observes `y`, or by removing conditioning,
 `predict(decondition(model), chn)`.
 """
 function predict(rng::Random.AbstractRNG, m::Model, chn::FlexiChains.SymChain; include_all::Bool=false)

@@ -102,10 +102,11 @@ fixed layout.
   model, with a linear predictor that is visibly linear in the parameters, it
   records the model's structure. The gradient is then computed directly,
   essentially `X' * residual`, without AD. This happens automatically, except with
-  `AutoPBForwardDiff`, which is kept for trimming; the recognition is purely
+  `AutoPBForwardDiff`, which is for trimming; the recognition is purely
   syntactic and conservative, so a model it does not
   recognise uses AD. See [`GradMode`](@ref) and [`check_gradmode`](@ref).
-- **Piste forward mode.** [`AutoPBForwardDiff`](@ref) computes derivatives with
+- **Piste forward mode.** [`AutoPBForwardDiff`](@ref) uses
+  [Piste.jl](https://github.com/EvoArt/Piste.jl), a separate package, which computes derivatives with
   dual numbers whose sizes are fixed at compile time and needs nothing built at
   run time, which is what `juliac --trim` requires.
 

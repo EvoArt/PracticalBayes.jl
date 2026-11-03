@@ -32,10 +32,8 @@ element.
 Sample as on the CPU; see [Run a model in Float32](@ref) for Float32
 parameters.
 
-## Check that the GPU was used
+## Check that the GPU is usable
 
-The repository's GPU tests skip themselves when no GPU is available, so a
-passing run proves nothing on its own. Run `test/gpu/runtests_gpu.jl` on a GPU
-node and check that its last line reads `GPU verification: REAL`. If
-`CUDA.functional()` is `false`, compare the node's driver version
-(`nvidia-smi`) with what CUDA.jl requires.
+`CUDA.functional()` must return `true` before the data can live on the device.
+If it returns `false`, check that the node's NVIDIA driver (`nvidia-smi`) is
+recent enough for the installed CUDA.jl.

@@ -21,7 +21,7 @@ end
 chn = sample(linreg(x, y), NUTS(), 1000)
 ```
 
-## What is different here
+## What is different to Turing.jl
 
 - **Gibbs kernels as plain functions.** A `Gibbs` block can be your own
   [`AbstractGibbsKernel`](@ref): one `gibbs_step` method that receives the
@@ -30,6 +30,20 @@ chn = sample(linreg(x, y), NUTS(), 1000)
   to Turing's `GibbsConditional` and `externalsampler`, but designed to be easy
   to use with the latent-state samplers of epidemic models, such as those in
   [EpidemicTrajectories.jl](https://evoart.github.io/EpidemicTrajectories/dev/tutorials/cattle_iffbs/). See [Sample with Gibbs blocks](@ref).
+- **Condition on transformed parameters.** `z := f(θ)` followed by
+  `z ~ dist` observes a quantity computed inside the model, and `z` is kept in
+  the chain. See [Data and parameters: `:=`](@ref).
+- **Tune fixed-length HMC during warm-up.** [`AdaptiveHMC`](@ref) adapts the
+  step size and mass matrix during warm-up, as NUTS does, then runs plain HMC
+  with a fixed number of steps; [`warm_start`](@ref) starts a run from an
+  earlier run's tuning.
+- **Keep nuisance parameters out of memory.** When using a Gibbs sampler, `save_states`
+  leaves variables out of the chain or streams them to disk, while
+  the sampler still uses them. See
+  [Keep large latent variables out of the chain](@ref).
+- **Closed-form gradients for GLMs.** When a model is recognised as a
+  generalised linear model, its gradient is computed in closed form instead of
+  by AD, automatically. This pays off on large datasets. See [`GradMode`](@ref).
 - **Float32.** A model can run in Float32 end to end, with a few rules about
   literals. See [Run a model in Float32](@ref).
 - **Trimmable models.** A simple model can be compiled into a standalone
@@ -44,5 +58,5 @@ chn = sample(linreg(x, y), NUTS(), 1000)
 - New to the package: [Getting started](@ref).
 - Coming from Turing: [Port a model from Turing](@ref). The
   [Turing tutorials](https://turinglang.org/docs/tutorials/) can be followed
-  with PracticalBayes with minimal changes.
+  with PracticalBayes with minimal changes (see [Port a model from Turing](@ref)).
 - How the pieces fit together: the [Explanation](@ref).

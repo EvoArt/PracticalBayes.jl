@@ -72,8 +72,8 @@ const _PG_STOP = _PGStop()
 
 Evaluation mode used by [`PG`](@ref): replays (or extends) one particle's
 block values and accumulates every other site's log density, stopping after a
-set number of weighting sites. `names` is the tuple of block variable names, a
-type parameter so membership folds to a constant at each site.
+set number of weighting sites. `names` is the tuple of the block's variable
+names.
 """
 mutable struct ParticleMode{names,R<:AbstractRNG,V<:NamedTuple,C<:NamedTuple} <: AbstractEvalMode
     rng::R

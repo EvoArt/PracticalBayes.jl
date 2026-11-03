@@ -2,10 +2,12 @@
 
 Julia 1.12's `juliac --trim` can compile a simple PracticalBayes model, its
 gradient and its sampler into an executable that runs without Julia installed.
-The gradient comes from Piste, PracticalBayes' trimmable AD backend.
+The gradient comes from [Piste.jl](https://github.com/EvoArt/Piste.jl), a
+separate forward-mode AD package that PracticalBayes can use through
+[`AutoPBForwardDiff`](@ref).
 
-This is experimental. It has been shown to work on small models like the one
-below; check your own model's binary against the same code run normally.
+This is experimental. It works for small models like the one below; check
+your own model's binary against the same code run normally.
 
 ## Write the program
 
