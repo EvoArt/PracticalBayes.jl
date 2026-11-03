@@ -161,7 +161,8 @@ function AbstractMCMC.sample(
     # implements, whereas transition types differ package to package.
     record = function (_, state)
         params = invlink(layout, AbstractMCMC.getparams(ldm, state))
-        return PBTransitionNT(params, merge(_sampler_stats(state), _density_stats(model, params)))
+        stats, walrus = _draw_extras(model, params)
+        return PBTransitionNT(merge(params, walrus), merge(_sampler_stats(state), stats))
     end
     transitions, state = _pb_sample_transitions(rng, ldm, spl, N, record;
                                                 initial_params=θ0, progress=progress, kwargs...)
@@ -284,6 +285,10 @@ function AbstractMCMC.sample(
     kwargs...,
 )
     save = _normalize_save_states(save_states)
+    # `:=` values go into the chain (not the raw `chain_type=nothing` sweeps),
+    # at one model evaluation per kept sweep — paid only by models that have
+    # `:=` names at all.
+    with_walrus = chain_type !== nothing && !isempty(walrus_names(model.f))
     streams = _init_disk_streams(save)
 
     # The meter spans burn-in AND kept sweeps: `discard_initial` sweeps cost the
@@ -317,8 +322,10 @@ function AbstractMCMC.sample(
         # whole point: retaining a 3 MB `X` for 5000 sweeps is what exhausts memory.
         retained = Val(_retained_keys(t, save))
 
-        kept = _select_names(t, retained)
-        transitions = Vector{typeof(kept)}(undef, N)
+        kept = _gibbs_kept(model, t, retained, with_walrus)
+        # With `:=` values a draw can hold `missing` where another holds a
+        # value, so the element type is only settled once every draw is in.
+        transitions = with_walrus ? Vector{Any}(undef, N) : Vector{typeof(kept)}(undef, N)
         # When there is no burn-in, the very first sweep (`t` above) is the first
         # kept draw; otherwise `t` currently holds the last discarded sweep and the
         # first kept draw comes from the next step.
@@ -327,21 +334,21 @@ function AbstractMCMC.sample(
             _record_disk!(streams, t)
             for i in 2:N
                 t, state = AbstractMCMC.step(rng, model, spl, state; n_adapts=n_adapts, kwargs...)
-                transitions[i] = _select_names(t, retained)
+                transitions[i] = _gibbs_kept(model, t, retained, with_walrus)
                 _record_disk!(streams, t)
                 _progress_update!(p, done += 1)
             end
         else
             for i in 1:N
                 t, state = AbstractMCMC.step(rng, model, spl, state; n_adapts=n_adapts, kwargs...)
-                transitions[i] = _select_names(t, retained)
+                transitions[i] = _gibbs_kept(model, t, retained, with_walrus)
                 _record_disk!(streams, t)
                 _progress_update!(p, done += 1)
             end
         end
         _flush_disk!(streams)  # trailing partial buffers
 
-        return transitions, state
+        return (with_walrus ? identity.(transitions) : transitions), state
     end
 
     chain_type === nothing && return transitions
@@ -354,6 +361,15 @@ end
 # The chain-retained key subset of a full sweep NamedTuple, preserving the
 # sweep's own key order. Runs ONCE per `sample` call (not per sweep), so the
 # `keys`/`haskey` work here is immaterial.
+# A kept sweep as the chain stores it. With `:=` names, their values come from
+# one FixedMode evaluation at the FULL sweep `t`, not the retained subset: a
+# variable dropped by `save_states` must still be fixed for that evaluation, or
+# FixedMode would draw it from the prior.
+function _gibbs_kept(model, t, retained, with_walrus)
+    with_walrus || return _select_names(t, retained)
+    return merge(_select_names(t, retained), last(_draw_extras(model, t)))
+end
+
 function _retained_keys(t::NamedTuple, save::NamedTuple)
     Tuple(k for k in keys(t) if _retained_in_chain(save, k))
 end
@@ -429,24 +445,34 @@ FlexiChains.to_nt_and_stats(t::PBTransitionNT) = (t.params, t.stats)
 
 function _pb_transition_to_nt(model, layout::Layout, t::AdvancedHMC.Transition)
     params = invlink(layout, t.z.θ)
-    stats = merge(AdvancedHMC.stat(t), _density_stats(model, params))
-    return PBTransitionNT(params, stats)
+    stats, walrus = _draw_extras(model, params)
+    return PBTransitionNT(merge(params, walrus), merge(AdvancedHMC.stat(t), stats))
 end
 
-# Turing's chains carry `logprior`, `loglikelihood` and `logjoint` for every
-# draw, on the constrained scale (no Jacobian term), and Turing code reads them
-# (`chn[:logjoint]`). AdvancedHMC's own `log_density` is not that: it is on the
-# unconstrained scale, Jacobian included. One FixedMode evaluation per KEPT
-# draw gives Turing's three exactly — the same cost Turing pays. A point the
-# model cannot score (a `missing` observation, which sampling never needs)
-# reports NaN rather than failing the chain.
-function _density_stats(model, params::NamedTuple)
+# What a chain records per draw beyond the parameters, from ONE FixedMode
+# evaluation of the model at that draw:
+#
+#   * `logprior`, `loglikelihood`, `logjoint` (returned as stats): Turing's
+#     chains carry these on the constrained scale (no Jacobian term), and
+#     Turing code reads them (`chn[:logjoint]`). AdvancedHMC's own
+#     `log_density` is not that: it is unconstrained, Jacobian included.
+#   * the model's `:=` values (returned as a NamedTuple, which goes into the
+#     chain's parameters, as Turing stores them). `record_walrus` collects
+#     them during that same evaluation; a `:=` the run did not reach (inside
+#     an untaken branch) is `missing`.
+#
+# One evaluation per KEPT draw, the same cost Turing pays. A point the model
+# cannot score (a `missing` observation, which sampling never needs) reports
+# NaN stats and `missing` values rather than failing the chain.
+function _draw_extras(model, params::NamedTuple)
+    names = walrus_names(model.f)
     try
-        _, acc, _ = _fixed_evaluate(Random.default_rng(), model, params; predict=false)
-        return (logprior=Float64(logprior(acc)), loglikelihood=Float64(loglikelihood_(acc)),
-                logjoint=Float64(logjoint(acc)))
+        _, acc, vals = _fixed_evaluate(Random.default_rng(), model, params; predict=false)
+        stats = (logprior=Float64(logprior(acc)), loglikelihood=Float64(loglikelihood_(acc)),
+                 logjoint=Float64(logjoint(acc)))
+        return stats, NamedTuple{names}(map(n -> hasproperty(vals, n) ? getproperty(vals, n) : missing, names))
     catch e
         e isa InterruptException && rethrow()
-        return (logprior=NaN, loglikelihood=NaN, logjoint=NaN)
+        return (logprior=NaN, loglikelihood=NaN, logjoint=NaN), NamedTuple{names}(map(_ -> missing, names))
     end
 end

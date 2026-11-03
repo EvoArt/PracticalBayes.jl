@@ -137,12 +137,14 @@ conditioning (`predict(decondition(model), chn)`), or to pass `missing` data
 (`predict(regression(x_test, fill(missing, n)), chn)`).
 """
 function predict(rng::Random.AbstractRNG, m::Model, chn::FlexiChains.SymChain; include_all::Bool=false)
-    params = FlexiChains.parameters(chn)
+    params = _fixed_params(m, chn)
     niters, nchains = size(chn[first(params)])
     vals = [_fixed_evaluate(rng, m, _draw_at(chn, params, i, c); predict=true)[3]
             for i in 1:niters, c in 1:nchains]
-    # The predicted variables are the ones the model DREW: not a chain
-    # parameter, and not an observe site that already had data.
+    # The predicted variables are the ones the model DREW or COMPUTED: not a
+    # parameter held fixed, and not an observe site that already had data.
+    # `:=` values are recomputed rather than held, so `yhat := X * beta` follows
+    # the predictive model's new `X`.
     names = [k for k in keys(vals[1]) if (include_all || !(k in params)) && !_has_data(m, k)]
     data = Dict(FlexiChains.Parameter(k) => [getfield(v, k) for v in vals] for k in names)
     return FlexiChains.FlexiChain{Symbol}(niters, nchains, data;
@@ -158,10 +160,14 @@ The model body's return value at every draw of `chn`, as an
 `(iterations × chains)` matrix — Turing's `returned(model, chain)`.
 """
 function returned(m::Model, chn::FlexiChains.SymChain; rng=Random.default_rng())
-    params = FlexiChains.parameters(chn)
+    params = _fixed_params(m, chn)
     niters, nchains = size(chn[first(params)])
     return [returned(m, _draw_at(chn, params, i, c); rng=rng) for i in 1:niters, c in 1:nchains]
 end
+
+# The chain parameters to hold fixed: everything except the model's `:=`
+# names, which a chain stores per draw but which the model computes itself.
+_fixed_params(m::Model, chn) = filter(p -> !(p in walrus_names(m.f)), FlexiChains.parameters(chn))
 
 # One draw of `chn` as the NamedTuple of parameter values a FixedMode reads.
 _draw_at(chn, params, i, c) = NamedTuple{Tuple(params)}(Tuple(chn[p][i, c] for p in params))

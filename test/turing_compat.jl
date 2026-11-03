@@ -156,3 +156,36 @@ end
     @test lj[3] ≈ logjoint(m, (; sigma=s[3]))
     @test vec(chn[:logprior])[3] + vec(chn[:loglikelihood])[3] ≈ lj[3]
 end
+
+@testset "turing_compat.jl: := values are stored, as in Turing" begin
+    @model function tc_walrus(y)
+        mu ~ Normal(0, 1)
+        twice := 2mu
+        y .~ Normal.(mu, 1.0)
+    end
+    y = randn(StableRNG(60), 10)
+    m = tc_walrus(y)
+    @test PracticalBayes.walrus_names(m.f) == (:twice,)
+
+    chn = sample(StableRNG(61), m, NUTS(0.8), 30; progress=false)
+    @test vec(chn[:twice]) ≈ 2 .* vec(chn[:mu])
+
+    g = sample(StableRNG(62), m, Gibbs(:mu => NUTS(0.8)), 20; n_adapts=10, progress=false)
+    @test vec(g[:twice]) ≈ 2 .* vec(g[:mu])
+
+    draw = rand(StableRNG(63), m)
+    @test draw.twice ≈ 2 * draw.mu
+
+    pr = predict(StableRNG(64), tc_walrus(fill(missing, 10)), chn)
+    @test :twice in FlexiChains.parameters(pr)
+    @test vec(pr[:twice]) ≈ 2 .* vec(chn[:mu])
+
+    # `:=` still marks a computed value as data for a later observe.
+    @model function tc_walrus_obs(x)
+        mu ~ Normal(0, 1)
+        z := x + mu
+        z ~ Normal(0, 10)
+    end
+    c2 = sample(StableRNG(65), tc_walrus_obs(1.0), NUTS(0.8), 20; progress=false)
+    @test vec(c2[:z]) ≈ 1.0 .+ vec(c2[:mu])
+end
