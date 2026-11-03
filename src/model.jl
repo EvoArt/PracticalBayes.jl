@@ -85,6 +85,16 @@ what each mode does.
     return m.f(mode, acc, _eval_args(mode, m.args)...)
 end
 
+# What PracticalBayes asks about a model after `@model` has expanded it: the
+# closed-form gradient plan, the `:=` names, and whether `@static_model`
+# defined it. `@model` answers with a one-argument method of the model's
+# evaluator, `f(::_ModelInfo)` (see `_model_expr`, compiler.jl); anything else
+# gets the defaults. Read at construction time and once per kept draw, never
+# on the gradient path.
+struct _ModelInfo end
+const _NO_MODEL_INFO = (plan=nothing, walrus=(), static=false)
+_model_info(f) = applicable(f, _ModelInfo()) ? f(_ModelInfo()) : _NO_MODEL_INFO
+
 # TYPE ARGUMENTS. Turing models take element types as arguments,
 # `@model function m(x, ::Type{T}=Vector{Float64}) where {T}`, and allocate with
 # them (`z = T(undef, n); z[i] ~ ...`). DynamicPPL replaces a floating-point

@@ -96,11 +96,9 @@ struct GradMode end
     gradmode_plan(f) -> Union{GLMPlan,Nothing}
 
 The `GLMPlan` recognized for a model evaluator at `@model` expansion time, or
-`nothing` when the model was not recognized. The `@model` macro emits a method
-of this for every model it compiles; this fallback covers evaluators built by
-other means.
+`nothing` when the model was not recognized (or `f` is not a model evaluator).
 """
-gradmode_plan(::Any) = nothing
+gradmode_plan(f) = _model_info(f).plan
 
 """
     is_gradmode_compatible(model::Model) -> Bool
