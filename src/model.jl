@@ -82,7 +82,7 @@ what each mode does.
     # to construct `mode` with `mode.conditioned === m.conditioned` (done at
     # each mode-construction site: `build_layout`, `logdensity.jl`'s
     # `_logdensity_call`, etc) — `evaluate` itself doesn't enforce this.
-    return m.f(mode, acc, _eval_args(mode, m.args)...)
+    return _call_model(m.f, mode, acc, m.args)
 end
 
 # What PracticalBayes asks about a model after `@model` has expanded it: the
@@ -105,19 +105,22 @@ _model_info(f) = applicable(f, _ModelInfo()) ? f(_ModelInfo()) : _NO_MODEL_INFO
 # A type stored in a NamedTuple is typed as plain `DataType`, which would turn
 # the evaluator call into a runtime dispatch. So the constructor stores it as
 # a `TypeWrap{T}` (as DynamicPPL does), keeping `T` in the type domain, and
-# `_eval_args` unwraps it at compile time. A model with no type arguments has
-# no `TypeWrap` field, and `_eval_args` returns its arguments untouched.
+# `_call_model` unwraps it at compile time.
+#
+# `_call_model` writes the evaluator call out argument by argument (`f(mode,
+# acc, getfield(args, 1), ...)`) rather than splatting a tuple: splatting a
+# tuple returned by another call was not inlined on Julia 1.10, which then
+# heap-allocated it on every evaluation (16 bytes per log-density call).
 struct TypeWrap{T} end
 _wrap_type(::Type{T}) where {T} = TypeWrap{T}()
 _wrap_type(x) = x
 
-@generated function _eval_args(mode, args::NamedTuple{names,V}) where {names,V}
-    any(t -> t <: TypeWrap, V.parameters) || return :args
+@generated function _call_model(f, mode, acc, args::NamedTuple{names,V}) where {names,V}
     vals = map(eachindex(names)) do i
         t = V.parameters[i]
         t <: TypeWrap ? :(_match_type(mode, $(t.parameters[1]))) : :(getfield(args, $i))
     end
-    return :(($(vals...),))
+    return :(f(mode, acc, $(vals...)))
 end
 
 _match_type(mode, ::Type{T}) where {T} = T
