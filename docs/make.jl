@@ -26,7 +26,7 @@ makedocs(
 )
 
 deploydocs(
-    repo="github.com/EvoArt/PracticalBayes.git",
+    repo="github.com/EvoArt/PracticalBayes.jl.git",
     devbranch="master",
     devurl="",
     versions=["v#.#", "v#.#.#", "stable"],

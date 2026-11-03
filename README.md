@@ -1,8 +1,8 @@
 # PracticalBayes
 
-[![CI](https://github.com/EvoArt/PracticalBayes/actions/workflows/ci.yml/badge.svg)](https://github.com/EvoArt/PracticalBayes/actions/workflows/ci.yml)
-[![Benchmark Sweep](https://github.com/EvoArt/PracticalBayes/actions/workflows/benchmark.yml/badge.svg)](https://github.com/EvoArt/PracticalBayes/actions/workflows/benchmark.yml)
-[![Docs](https://img.shields.io/badge/docs-stable-blue.svg)](https://EvoArt.github.io/PracticalBayes)
+[![CI](https://github.com/EvoArt/PracticalBayes.jl/actions/workflows/ci.yml/badge.svg)](https://github.com/EvoArt/PracticalBayes.jl/actions/workflows/ci.yml)
+[![Benchmark Sweep](https://github.com/EvoArt/PracticalBayes.jl/actions/workflows/benchmark.yml/badge.svg)](https://github.com/EvoArt/PracticalBayes.jl/actions/workflows/benchmark.yml)
+[![Docs](https://img.shields.io/badge/docs-stable-blue.svg)](https://evoart.github.io/PracticalBayes.jl/)
 
 PracticalBayes is a probabilistic programming package for Julia, and a work in
 progress. It is built largely from the building blocks of the Turing ecosystem,
@@ -12,7 +12,7 @@ PracticallyBayesian packages. Models are written with Turing-style `@model` and
 
 ```julia
 using Pkg
-Pkg.add(url="https://github.com/EvoArt/PracticalBayes")
+Pkg.add("PracticalBayes")
 ```
 
 ```julia
@@ -48,7 +48,7 @@ chn[:β]
 - **Closed-form gradients** for models recognised as generalised linear models,
   used automatically.
 
-See the [documentation](https://EvoArt.github.io/PracticalBayes) for a
+See the [documentation](https://evoart.github.io/PracticalBayes.jl/) for a
 getting-started guide, how-to guides and the API reference.
 
 ## Relationship to Turing
@@ -58,7 +58,7 @@ AdvancedHMC, Bijectors, Distributions, LogDensityProblems, FlexiChains). It has
 its own model evaluation in place of DynamicPPL, does not depend on Turing
 itself, and covers a narrower range of models. Most Turing models, and most of the
 [Turing tutorials](https://turinglang.org/docs/tutorials/), run with small changes; see
-[Port a model from Turing](https://EvoArt.github.io/PracticalBayes/howto/from_turing/).
+[Port a model from Turing](https://evoart.github.io/PracticalBayes.jl/howto/from_turing/).
 
 ## Benchmark summary (auto-updated)
 
