@@ -41,7 +41,7 @@ chn = sample(linreg(x, y), NUTS(), 1000)
 
 ## Where to go next
 
-- New to the package: the [Tutorial](@ref).
+- New to the package: [Getting started](@ref).
 - Coming from Turing: [Port a model from Turing](@ref). The
   [Turing tutorials](https://turinglang.org/docs/tutorials/) can be followed
   with PracticalBayes with minimal changes.

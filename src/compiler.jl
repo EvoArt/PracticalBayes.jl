@@ -19,7 +19,7 @@ Statements in the body:
   a loop. `dists` may be one distribution or a broadcast such as
   `Normal.(mu, sigma)`. `.~` cannot introduce parameters; use an array
   distribution with `~` for those.
-- `z := expr`: an ordinary assignment, after which `z` counts as data, so a
+- `z := expr`: assign `z`, record it in the chain, and treat it as data, so a
   later `z ~ dist` observes it.
 - [`@addlogprob!`](@ref)` expr`: add `expr` to the log-likelihood.
 - `return expr`: the value [`returned`](@ref) gives back.

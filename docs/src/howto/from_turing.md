@@ -54,12 +54,10 @@ not a bare `missing`:
 predict(model(X, fill(missing, n)), chn)
 ```
 
-### `:=` marks data, and is not stored in the chain
+### `:=` also marks data
 
-In Turing, `z := expr` adds `z` to the chain. In PracticalBayes it is an
-assignment that makes `z` count as data for a later `z ~ dist`, and it is not
-stored. Return derived quantities from the model and read them with
-`returned(model, chn)`. See [Data and parameters: `:=`](@ref).
+As in Turing, `z := expr` records `z` in the chain. It also makes `z` count as
+data, so a later `z ~ dist` observes it. See [Data and parameters: `:=`](@ref).
 
 ### Only whole variables can be conditioned
 

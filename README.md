@@ -49,7 +49,7 @@ chn[:β]
   used automatically.
 
 See the [documentation](https://EvoArt.github.io/PracticalBayes) for a
-tutorial, how-to guides and the API reference.
+getting-started guide, how-to guides and the API reference.
 
 ## Relationship to Turing
 

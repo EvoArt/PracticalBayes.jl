@@ -9,7 +9,7 @@ makedocs(
     format=Documenter.HTML(prettyurls=get(ENV, "CI", "false") == "true"),
     pages=[
         "Home" => "index.md",
-        "Tutorial" => "tutorial.md",
+        "Getting started" => "getting_started.md",
         "How-to guides" => [
             "howto/gibbs.md",
             "howto/predictive.md",

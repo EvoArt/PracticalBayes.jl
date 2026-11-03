@@ -1,12 +1,12 @@
-# Tutorial
+# Getting started
 
-In this tutorial we fit a straight line to simulated data: we write a model,
+Here we fit a straight line to simulated data: we write a model,
 sample its posterior with NUTS, look at the result, and check the fit with
 posterior predictive draws.
 
 ## Simulate some data
 
-```@example tutorial
+```@example start
 using PracticalBayes, Distributions, StableRNGs, Statistics
 
 rng = StableRNG(1)
@@ -23,7 +23,7 @@ A model is a function marked with `@model`. Each `~` line gives a variable a
 distribution. `α`, `β` and `σ` are not arguments, so they are parameters. `y`
 is an argument holding data, so `.~` observes each element of it.
 
-```@example tutorial
+```@example start
 @model function linreg(x, y)
     α ~ Normal(0, 10)
     β ~ Normal(0, 10)
@@ -40,7 +40,7 @@ nothing # hide
 We draw 1000 samples with NUTS. Before them, `sample` runs warm-up iterations
 that tune the sampler and are then dropped.
 
-```@example tutorial
+```@example start
 chn = sample(StableRNG(2), model, NUTS(), 1000; progress=false)
 nothing # hide
 ```
@@ -50,7 +50,7 @@ nothing # hide
 The chain is indexed by parameter name. Each entry is a matrix with one row per
 draw and one column per chain.
 
-```@example tutorial
+```@example start
 mean(chn[:α]), mean(chn[:β]), mean(chn[:σ])
 ```
 
@@ -63,7 +63,7 @@ by missing values. `fill(missing, 50)` gives the shape of the output.
 [`predict`](@ref) then draws `y` once for each posterior draw, and returns them
 as a chain.
 
-```@example tutorial
+```@example start
 preds = predict(StableRNG(3), linreg(x, fill(missing, 50)), chn)
 yrep = reduce(hcat, preds[:y])
 size(yrep)
@@ -72,7 +72,7 @@ size(yrep)
 Each column of `yrep` is one simulated dataset. If the model fits, about 90% of
 the observations should fall inside their 90% predictive intervals:
 
-```@example tutorial
+```@example start
 lo = [quantile(r, 0.05) for r in eachrow(yrep)]
 hi = [quantile(r, 0.95) for r in eachrow(yrep)]
 mean(lo .<= y .<= hi)

@@ -27,9 +27,9 @@ checking at every evaluation, is part of what keeps an observe statement as
 cheap as a `logpdf` call.
 
 The rule needs a way to say that a name computed inside the body is data too.
-That is what `:=` does. `z := expr` runs as an ordinary assignment, and also adds
-`z` to the names treated as data for the rest of the body, so a later
-`z ~ dist` (or `z[i] ~ dist`) observes the computed value:
+That is what `:=` does. `z := expr` assigns the value, adds `z` to the names
+treated as data for the rest of the body, so a later `z ~ dist` (or
+`z[i] ~ dist`) observes the computed value, and records `z` in the chain:
 
 ```julia
 @model function f(x)
@@ -39,8 +39,9 @@ That is what `:=` does. `z := expr` runs as an ordinary assignment, and also add
 end
 ```
 
-With `=` instead, `z ~ dist` would declare `z` a parameter. A `:=` value is not
-stored in the chain; use [`returned`](@ref) for derived quantities.
+With `=` instead, `z ~ dist` would declare `z` a parameter, and `z` would not
+appear in the chain. `:=` is also the way to keep a derived quantity, such as
+a transformed parameter, with each draw.
 
 ## Skipping terms in Gibbs blocks: `depends=`
 
