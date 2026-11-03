@@ -27,9 +27,9 @@ checking at every evaluation, is part of what keeps an observe statement as
 cheap as a `logpdf` call.
 
 The rule needs a way to say that a name computed inside the body is data too.
-That is what `:=` does. `z := expr` assigns the value, adds `z` to the names
-treated as data for the rest of the body, so a later `z ~ dist` (or
-`z[i] ~ dist`) observes the computed value, and records `z` in the chain:
+That is what `:=` does. `z := expr` assigns the value, records `z` in the
+chain, and adds `z` to the names treated as data for the rest of the body, so a
+later `z ~ dist` (or `z[i] ~ dist`) observes the computed value:
 
 ```julia
 @model function f(x)
@@ -82,6 +82,7 @@ observe statement costs what `logpdf` costs.
 | [`PriorMode`](@ref) | `rand(model)` | the prior |
 | [`FixedMode`](@ref) | [`logjoint`](@ref), [`returned`](@ref), [`predict`](@ref) | a `NamedTuple` |
 | [`PointwiseMode`](@ref) | [`pointwise_loglikelihoods`](@ref) | a `NamedTuple` |
+| [`ParticleMode`](@ref) | [`PG`](@ref) | one particle's values for the block |
 
 `PriorMode`, and `FixedMode` when called from `predict`, also draw observed
 variables that have no data.
@@ -101,14 +102,13 @@ fixed layout.
 - **The closed form.** When `@model` sees that a model is a generalised linear
   model, with a linear predictor that is visibly linear in the parameters, it
   records the model's structure. The gradient is then computed directly,
-  essentially `X' * residual`, without AD. This happens automatically, except with
-  `AutoPBForwardDiff`, which is for trimming; the recognition is purely
-  syntactic and conservative, so a model it does not
-  recognise uses AD. See [`GradMode`](@ref) and [`check_gradmode`](@ref).
+  essentially `X' * residual`, without AD. This happens automatically, except
+  with `AutoPBForwardDiff`, which is for trimming. The recognition is purely
+  syntactic and conservative, so a model it does not recognise uses AD. See [`GradMode`](@ref) and [`check_gradmode`](@ref).
 - **Piste forward mode.** [`AutoPBForwardDiff`](@ref) uses
-  [Piste.jl](https://github.com/EvoArt/Piste.jl), a separate package, which computes derivatives with
-  dual numbers whose sizes are fixed at compile time and needs nothing built at
-  run time, which is what `juliac --trim` requires.
+  [Piste.jl](https://github.com/EvoArt/Piste.jl), a separate package. It
+  computes derivatives with dual numbers whose sizes are fixed at compile time
+  and needs nothing built at run time, which is what `juliac --trim` requires.
 
 The static samplers, [`static_nuts`](@ref) and [`static_hmc`](@ref), exist for
 the same reason: AdvancedHMC does not compile under `--trim`, so these are
