@@ -706,14 +706,18 @@ end
 # ===========================================================================
 
 function tilde(p::PriorMode, ::Val{s}, dist, value, acc::Accum) where {s}
-    # An observe site under PriorMode still uses the REAL data if it's
-    # available (e.g. `model | (; y=obs))`) — this lets `rand(model)` on a
-    # partially-conditioned model reproduce the conditioned values exactly
-    # while still drawing everything else fresh from the prior. Only when
-    # there's truly no data does this fall back to drawing from `dist`.
+    # An observe site under PriorMode still USES the real data if it's
+    # available (e.g. `model | (; y=obs))`), so anything computed from it
+    # downstream sees the data. Only when there's truly no data does this
+    # fall back to drawing from `dist`.
+    #
+    # Only a DRAWN value is recorded: `rand(model)` returns parameters, `:=`
+    # values and newly drawn observations, never data the caller supplied —
+    # the same rule the `.~` and looped `y[i] ~` observe methods follow, and
+    # what Turing's `rand(model)` does.
     cond = value !== nothing && value !== missing ? value : _getcond(p.conditioned, Val(s))
     x = cond === nothing ? rand(p.rng, dist) : cond
-    p.values[] = merge(p.values[], NamedTuple{(s,)}((x,)))
+    cond === nothing && (p.values[] = merge(p.values[], NamedTuple{(s,)}((x,))))
     return x, acc_lik(acc, logpdf(dist, x))
 end
 

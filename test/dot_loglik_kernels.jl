@@ -9,6 +9,11 @@
 import Distributions
 import StableRNGs
 
+# Allocation of one warm call, measured inside a function: written directly in
+# a testset body, `@allocated` on Julia 1.10 also counts boxing the call's
+# Float64 result (16 bytes), which is not the code under test.
+_dl_allocs(f, args...) = (f(args...); @allocated f(args...))
+
 @testset "_dot_loglik specialized kernels" begin
     dl = PracticalBayes._dot_loglik
     rng = StableRNGs.StableRNG(20250904)
@@ -71,8 +76,13 @@ import StableRNGs
         yy = randn(rng, 50)
         @test dl(ds, yy) ≈ sum(Distributions.logpdf.(ds, yy)) rtol=1e-10
         # ... which never materializes the per-observation log-densities
-        dl(ds, yy)
-        @test (@allocated dl(ds, yy)) == 0
+        # The claim is "no per-observation temporary", i.e. allocation that
+        # does not grow with the data: it is 0 on Julia 1.11+, and a fixed 16
+        # bytes on 1.10 whatever the length.
+        a_small = _dl_allocs(dl, ds, yy)
+        a_big = _dl_allocs(dl, Distributions.Normal.(randn(rng, 5000), 1.2), randn(rng, 5000))
+        @test a_small == a_big
+        @test a_small <= 16
         # ... and keeps broadcasting's shape rules: one distribution per ROW
         # of a matrix, and a mismatch is still an error, not a silent wrong sum
         Y = randn(rng, 50, 3)

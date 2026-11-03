@@ -14,6 +14,11 @@ import AbstractMCMC
 import LogDensityProblems
 using Statistics: mean, std
 
+# Allocation of one warm call, measured inside a function: written directly in
+# a testset body, `@allocated` on Julia 1.10 also counts boxing the call's
+# Float64 result (16 bytes), which is not the code under test.
+_io_allocs(f, args...) = (f(args...); @allocated f(args...))
+
 @model function loop_obs(y)
     mu ~ Normal(0, 1)
     for i in eachindex(y)
@@ -51,12 +56,18 @@ end
 
 @testset "indexed_observe.jl: observe path does not allocate" begin
     # The EvalMode method is one element read plus one logpdf, the same work
-    # as the scalar observe — it must not add per-element allocation.
-    y = randn(StableRNG(1), 200)
-    layout, θ0, _ = build_layout(loop_obs(y))
-    ldf = LogDensityFunction(loop_obs(y), layout, NamedTuple(), nothing)
-    LogDensityProblems.logdensity(ldf, θ0)   # compile
-    @test (@allocated LogDensityProblems.logdensity(ldf, θ0)) == 0
+    # as the scalar observe — it must not add per-element allocation. So the
+    # allocation must not grow with the data: it is 0 on Julia 1.11+, and a
+    # fixed 16 bytes per call on 1.10 whatever the length.
+    function allocs_at(n)
+        y = randn(StableRNG(1), n)
+        layout, θ0, _ = build_layout(loop_obs(y); rng=StableRNG(2))
+        ldf = LogDensityFunction(loop_obs(y), layout, NamedTuple(), nothing)
+        return _io_allocs(LogDensityProblems.logdensity, ldf, θ0)
+    end
+    a_small, a_big = allocs_at(50), allocs_at(5000)
+    @test a_small == a_big
+    @test a_small <= 16
 end
 
 @testset "indexed_observe.jl: NUTS on a looped observe matches the analytic posterior" begin

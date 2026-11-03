@@ -238,3 +238,18 @@ end
     @test PracticalBayes.is_gradmode_compatible(glm_shaped(X, y)) ==
           (PracticalBayes.gradmode_plan(glm_shaped(X, y).f) !== nothing)
 end
+
+@testset "predict.jl: rand(model) returns no supplied data" begin
+    # Every observe form returns a value only when it drew one: the data a
+    # caller supplied (as an argument or by conditioning) is not part of the
+    # draw. A plain `y ~` used to return it while `.~` and `y[i] ~` did not.
+    @model function rd_plain(x)
+        mu ~ Normal(0, 1)
+        x ~ Normal(mu, 1)
+        z ~ Normal(mu, 1)
+    end
+    d = rand(StableRNG(70), rd_plain(0.5) | (; z=1.0))
+    @test keys(d) == (:mu,)
+    d2 = rand(StableRNG(71), rd_plain(missing))
+    @test Set(keys(d2)) == Set((:mu, :x, :z))
+end
