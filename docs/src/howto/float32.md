@@ -25,8 +25,7 @@ end
 X = randn(StableRNG(1), 100, 3)
 y = X * [1.0, -1.0, 0.5] .+ 0.2 .* randn(StableRNG(2), 100)
 
-chn = sample(StableRNG(3), reg32(X, y), NUTS(0.8f0), 500;
-             n_adapts=500, discard_initial=500, progress=false)
+chn = sample(StableRNG(3), reg32(X, y), NUTS(0.8f0), 500; progress=false)
 mean(chn[:beta])
 ```
 

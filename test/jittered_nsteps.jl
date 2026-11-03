@@ -92,10 +92,10 @@ end
     # is untouched and free to use its own tree depths.
     chn = AbstractMCMC.sample(
         StableRNG(1), m, NUTSthenHMC(0.8; n_leapfrog=L, jitter=true), 400;
-        n_adapts=n_adapts, progress=false,
+        n_adapts=n_adapts, discard_initial=0, progress=false,
     )
-    # Slice past the warm-up: `discard_initial` is not applied here (the chain
-    # keeps all `n_adapts` warm-up iterations), and those are real NUTS tree
+    # Slice past the warm-up: `discard_initial=0` keeps all `n_adapts` warm-up
+    # iterations in the chain (the default would drop them), and those are real NUTS tree
     # steps whose counts are `2^depth - 1` and can exceed L. Only the
     # post-switch tail is the jittered HMC phase this test is about.
     ns = vec(chn[FlexiChains.Extra(:n_steps)])[(n_adapts + 1):end]
@@ -105,7 +105,7 @@ end
     # Default stays fixed-length, on the same post-warm-up slice.
     chn_f = AbstractMCMC.sample(
         StableRNG(1), m, NUTSthenHMC(0.8; n_leapfrog=L), 400;
-        n_adapts=n_adapts, progress=false,
+        n_adapts=n_adapts, discard_initial=0, progress=false,
     )
     ns_f = vec(chn_f[FlexiChains.Extra(:n_steps)])[(n_adapts + 1):end]
     @test all(==(L), ns_f)

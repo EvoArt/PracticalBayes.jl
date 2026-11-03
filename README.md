@@ -27,15 +27,19 @@ end
 
 x = range(0, 1; length=50)
 y = 1 .+ 2 .* x .+ 0.3 .* randn(50)
-chn = sample(linreg(x, y), NUTS(0.8), 1000; n_adapts=1000, discard_initial=1000)
+chn = sample(linreg(x, y), NUTS(), 1000)
 chn[:β]
 ```
 
 ## Features
 
-- **Latent-variable samplers outside the gradient.** A `Gibbs` block can be
-  your own `AbstractLatentKernel`, next to NUTS and conjugate blocks. It runs
-  once per sweep and is never differentiated.
+- **Latent kernels as plain functions.** A `Gibbs` block can be your own
+  `AbstractLatentKernel`: one `latent_step` method that receives the model's
+  data and the current value of every parameter, and returns new values for its
+  block. It runs once per MCMC step, outside the gradient. It is similar to
+  Turing's `GibbsConditional` and `externalsampler`, but designed to be easy to
+  use with the latent-state samplers of epidemic models, such as those in
+  [EpidemicTrajectories.jl](https://evoart.github.io/EpidemicTrajectories/dev/tutorials/cattle_iffbs/).
 - **Float32.** Models can run in Float32 end to end.
 - **Trimmable models.** A simple model can be compiled into a standalone binary
   with `juliac --trim`.
@@ -52,8 +56,9 @@ tutorial, how-to guides and the API reference.
 PracticalBayes is assembled from Turing ecosystem packages (AbstractPPL,
 AdvancedHMC, Bijectors, Distributions, LogDensityProblems, FlexiChains). It has
 its own model evaluation in place of DynamicPPL, does not depend on Turing
-itself, and covers a narrower range of models. Most Turing models port with small changes;
-see [Port a model from Turing](https://EvoArt.github.io/PracticalBayes/howto/from_turing/).
+itself, and covers a narrower range of models. Most Turing models, and most of the
+[Turing tutorials](https://turinglang.org/docs/tutorials/), run with small changes; see
+[Port a model from Turing](https://EvoArt.github.io/PracticalBayes/howto/from_turing/).
 
 ## Benchmark summary (auto-updated)
 

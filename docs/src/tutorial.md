@@ -6,9 +6,6 @@ posterior predictive draws.
 
 ## Simulate some data
 
-We need PracticalBayes and Distributions. StableRNGs makes the random numbers
-the same on every machine.
-
 ```@example tutorial
 using PracticalBayes, Distributions, StableRNGs, Statistics
 
@@ -40,12 +37,11 @@ nothing # hide
 
 ## Sample
 
-We run NUTS for 1000 warm-up iterations, which adapt the step size and are
-then dropped, and keep the next 1000.
+We draw 1000 samples with NUTS. Before them, `sample` runs warm-up iterations
+that tune the sampler and are then dropped.
 
 ```@example tutorial
-chn = sample(StableRNG(2), model, NUTS(0.8), 1000;
-             n_adapts=1000, discard_initial=1000, progress=false)
+chn = sample(StableRNG(2), model, NUTS(), 1000; progress=false)
 nothing # hide
 ```
 
@@ -64,12 +60,12 @@ The posterior means are close to the values we simulated from.
 
 To draw new data from the fitted model we build it again with the data replaced
 by missing values. `fill(missing, 50)` gives the shape of the output.
-[`predict`](@ref) then draws `y` once for each posterior draw.
+[`predict`](@ref) then draws `y` once for each posterior draw, and returns them
+as a chain.
 
 ```@example tutorial
-draws = chain_draws(chn)
-preds = predict(StableRNG(3), linreg(x, fill(missing, 50)), draws)
-yrep = reduce(hcat, p.y for p in preds)
+preds = predict(StableRNG(3), linreg(x, fill(missing, 50)), chn)
+yrep = reduce(hcat, preds[:y])
 size(yrep)
 ```
 
@@ -86,4 +82,3 @@ mean(lo .<= y .<= hi)
 
 - Mix NUTS with your own samplers: [Sample with Gibbs blocks](@ref).
 - More predictive checks and LOO: [Check a model with predictive draws](@ref).
-- Every function used here: the [Reference](@ref).

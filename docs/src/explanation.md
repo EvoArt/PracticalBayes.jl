@@ -1,6 +1,6 @@
 # Explanation
 
-## Latent kernels run outside the gradient
+## Latent kernels in a Gibbs sampler
 
 HMC moves continuous parameters using the gradient of the log density, and each
 iteration evaluates that gradient many times. A discrete or very large latent
@@ -17,6 +17,52 @@ proposals scored with [`logjoint`](@ref).
 
 The cost is the usual one for Gibbs sampling: blocks that are strongly
 correlated mix slowly when updated separately.
+
+## Data and parameters: `:=`
+
+Whether `x ~ dist` observes data or declares a parameter is decided when
+`@model` expands the body, from names alone: `x` is data if it is one of the
+model's arguments, and a parameter otherwise. Deciding this once, rather than
+checking at every evaluation, is part of what keeps an observe statement as
+cheap as a `logpdf` call.
+
+The rule needs a way to say that a name computed inside the body is data too.
+That is what `:=` does. `z := expr` runs as an ordinary assignment, and also adds
+`z` to the names treated as data for the rest of the body, so a later
+`z ~ dist` (or `z[i] ~ dist`) observes the computed value:
+
+```julia
+@model function f(x)
+    μ ~ Normal(0, 1)
+    z := x .- 1      # data, computed from an argument
+    z .~ Normal(μ, 1)
+end
+```
+
+With `=` instead, `z ~ dist` would declare `z` a parameter. A `:=` value is not
+stored in the chain; use [`returned`](@ref) for derived quantities.
+
+## Skipping terms in Gibbs blocks: `depends=`
+
+An HMC block of a [`Gibbs`](@ref) sampler evaluates the model's whole log
+density and its gradient with respect to the block's own parameters. A term
+that does not involve any of those parameters is a constant for that block: it
+shifts the log density by a fixed amount and adds nothing to the gradient, so
+evaluating it is wasted work. For an expensive [`@addlogprob!`](@ref) term,
+such as the likelihood of a latent trajectory, that waste can dominate a block
+that owns only a few cheap parameters.
+
+`@addlogprob! expr depends=(:a, :b)` says which variables `expr` reads. Within a
+block, the check is resolved when the code is compiled: if the block owns none
+of `a` and `b`, the term is removed from that block's evaluation entirely.
+Skipping it is exact, since the term could not change that block's update.
+
+The annotation is not checked automatically. If it leaves out a variable the
+term reads, the blocks owning that variable lose a real part of their gradient
+and sample the wrong distribution, without any error. [`check_depends`](@ref)
+compares each block's gradient with and without skipping and reports any
+difference. A whole-model sampler such as plain `NUTS` owns every variable, so
+it never skips anything.
 
 ## Evaluation modes
 

@@ -65,6 +65,12 @@ end
 nothing # hide
 ```
 
+## Use particle Gibbs or another sampler
+
+For a discrete block with no exact kernel, [`PG`](@ref) draws it by particle
+Gibbs: `:z => PG(50)`. A continuous block can also use any AbstractMCMC sampler
+that works on a log density, such as AdvancedMH's random-walk sampler.
+
 ## Run the sampler
 
 Give every parameter to exactly one block. To put several continuous
@@ -77,8 +83,9 @@ chn = sample(StableRNG(3), mixture(y), spl, 1000;
 mean(chn[:μ]), mean(chn[:p])
 ```
 
-The data were simulated with `μ = 3` and `p = 0.4`. `n_adapts` counts sweeps from the first one, so pass the same value for the
-whole run.
+The data were simulated with `μ = 3` and `p = 0.4`. Unlike a plain NUTS run, a Gibbs run does no warm-up unless you ask:
+pass `n_adapts` and `discard_initial`. `n_adapts` counts sweeps from the
+first one, so pass the same value for the whole run.
 
 ## Keep large latent variables out of the chain
 

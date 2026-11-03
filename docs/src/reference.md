@@ -4,8 +4,11 @@
 CurrentModule = PracticalBayes
 ```
 
-PracticalBayes also re-exports `NUTS`, `HMC` and `HMCDA` from
-[AdvancedHMC](https://github.com/TuringLang/AdvancedHMC.jl).
+PracticalBayes also re-exports `HMC` and `HMCDA` from
+[AdvancedHMC](https://github.com/TuringLang/AdvancedHMC.jl); `MCMCThreads`,
+`MCMCSerial` and `MCMCDistributed` from AbstractMCMC; `AutoForwardDiff`,
+`AutoReverseDiff`, `AutoMooncake` and `AutoEnzyme` from ADTypes; and `I` from
+LinearAlgebra.
 
 ## Models
 
@@ -35,6 +38,8 @@ BernoulliCLogLog
 ```@docs
 sample(::Random.AbstractRNG, ::Model, ::AdvancedHMC.AbstractHMCSampler, ::Integer)
 sample(::Random.AbstractRNG, ::Model, ::Gibbs, ::Integer)
+sample(::Random.AbstractRNG, ::Model, ::AbstractMCMC.AbstractSampler, ::Integer)
+NUTS
 SymChain
 param_draws
 chain_draws
@@ -42,6 +47,7 @@ NUTSthenHMC
 AdaptiveHMC
 JitteredNSteps
 default_progress
+setprogress!
 ```
 
 ## Gibbs sampling
@@ -52,6 +58,7 @@ AbstractLatentKernel
 latent_step
 ModelConditional
 ConjugateGibbs
+PG
 GibbsState
 AbstractMCMC.step(::Random.AbstractRNG, ::Model, ::Gibbs)
 AbstractMCMC.step(::Random.AbstractRNG, ::Model, ::Gibbs, ::GibbsState)
@@ -70,6 +77,7 @@ write_state_chunk!
 
 ```@docs
 Random.rand(::Random.AbstractRNG, ::Model)
+Model(::Random.AbstractRNG)
 predict
 returned
 logjoint
@@ -125,4 +133,5 @@ EvalMode
 PriorMode
 FixedMode
 PointwiseMode
+ParticleMode
 ```

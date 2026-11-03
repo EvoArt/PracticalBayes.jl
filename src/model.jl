@@ -50,10 +50,13 @@ Base.:|(m::Model, nt::NamedTuple) = condition(m, nt)
 
 """
     decondition(model, names::Symbol...) -> Model
+    decondition(model) -> Model
 
 Return a copy of `model` in which the variables `names`, previously bound with
-[`condition`](@ref), are parameters again.
+[`condition`](@ref), are parameters again. With no names, all conditioning is
+removed.
 """
+decondition(m::Model) = Model(m.f, m.args, NamedTuple())
 function decondition(m::Model, names::Symbol...)
     # `Base.structdiff` builds the NamedTuple of fields in `m.conditioned`
     # EXCLUDING `names` — i.e. the inverse operation of `merge`.
@@ -79,5 +82,34 @@ what each mode does.
     # to construct `mode` with `mode.conditioned === m.conditioned` (done at
     # each mode-construction site: `build_layout`, `logdensity.jl`'s
     # `_logdensity_call`, etc) — `evaluate` itself doesn't enforce this.
-    return m.f(mode, acc, m.args...)
+    return m.f(mode, acc, _eval_args(mode, m.args)...)
 end
+
+# TYPE ARGUMENTS. Turing models take element types as arguments,
+# `@model function m(x, ::Type{T}=Vector{Float64}) where {T}`, and allocate with
+# them (`z = T(undef, n); z[i] ~ ...`). DynamicPPL replaces a floating-point
+# type argument with the AD number type on every evaluation, which is what lets
+# such a container hold Duals; `paramtype(__mode__)` is PB's equivalent, and
+# `_match_type` applies it to these arguments the same way.
+#
+# A type stored in a NamedTuple is typed as plain `DataType`, which would turn
+# the evaluator call into a runtime dispatch. So the constructor stores it as
+# a `TypeWrap{T}` (as DynamicPPL does), keeping `T` in the type domain, and
+# `_eval_args` unwraps it at compile time. A model with no type arguments has
+# no `TypeWrap` field, and `_eval_args` returns its arguments untouched.
+struct TypeWrap{T} end
+_wrap_type(::Type{T}) where {T} = TypeWrap{T}()
+_wrap_type(x) = x
+
+@generated function _eval_args(mode, args::NamedTuple{names,V}) where {names,V}
+    any(t -> t <: TypeWrap, V.parameters) || return :args
+    vals = map(eachindex(names)) do i
+        t = V.parameters[i]
+        t <: TypeWrap ? :(_match_type(mode, $(t.parameters[1]))) : :(getfield(args, $i))
+    end
+    return :(($(vals...),))
+end
+
+_match_type(mode, ::Type{T}) where {T} = T
+_match_type(mode, ::Type{T}) where {T<:AbstractFloat} = paramtype(mode)
+_match_type(mode, ::Type{Array{T,N}}) where {T<:AbstractFloat,N} = Array{paramtype(mode),N}

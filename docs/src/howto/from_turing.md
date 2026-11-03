@@ -1,80 +1,91 @@
 # Port a model from Turing
 
-Most Turing models run unchanged. These are the differences.
+Most Turing models run unchanged, and the
+[Turing tutorials](https://turinglang.org/docs/tutorials/) can be followed with
+PracticalBayes in place of Turing.
 
-## Which statements observe data
+## Follow a Turing tutorial
 
-As in Turing, `y ~ dist`, `y .~ dist` and `y[i] ~ dist` observe `y` when `y`
-is a model argument (or a `:=` name), and declare parameters otherwise. An
-argument the body reassigns to a new container still counts as data.
+Make three changes to the tutorial's code:
 
-A loop of `y[i] ~` works, but `.~` over the whole vector is much faster:
+1. Replace `using Turing` with `using PracticalBayes, Distributions`.
+   PracticalBayes does not re-export Distributions.
+2. Replace `@varname(x)` with `:x`, since chains are indexed by symbol. An
+   element such as `chn[@varname(m[1])]` becomes `param_draws(chn, :m, 1)`.
+3. Replace `VNChain` with `SymChain` where a tutorial names the chain type.
+
+With only these changes, these tutorials run: linear regression, logistic
+regression, Poisson regression, multinomial logistic regression, time series
+analysis, coin flipping, Bayesian neural networks, differential equations,
+Gaussian processes (introduction) and probabilistic PCA.
+
+Gaussian mixture models and hidden Markov models also need the indexed form of
+change 2 for their plots; they sample with [`PG`](@ref). For a hidden Markov
+model, an exact forward-filtering backward-sampling kernel is the better
+choice; see [Sample with Gibbs blocks](@ref).
+
+Infinite mixture models (`SMC`, `Turing.RandomMeasures`) and variational
+inference (`Turing.Variational`) are not supported.
+
+## Differences to know
+
+### Prefer `.~` to a loop over the data
+
+`y ~ dist`, `y .~ dist` and `y[i] ~ dist` observe `y` when `y` is a model
+argument (or a `:=` name), and declare parameters otherwise. An argument the
+body reassigns to a new container still counts as data. A loop of `y[i] ~`
+works, but `.~` over the whole vector is much faster, and it accepts one
+distribution per element where Turing needs `product_distribution`:
 
 ```julia
-y .~ Normal.(mu, sigma)            # faster than: for i in eachindex(y); y[i] ~ Normal(mu[i], sigma); end
+y .~ Normal.(mu, sigma)
 ```
 
-## `.~` takes per-element distributions, and only observes
+`.~` cannot declare parameters; use an array distribution with `~`. For an IID
+vector prior, `beta ~ MvNormal(...)` is much faster under reverse-mode AD than a
+loop of `beta[j] ~`.
 
-`y .~ Normal.(eta, sigma)` with a vector `eta` works, where Turing needs
-`product_distribution`. `.~` cannot declare parameters; use an array
-distribution with `~`. For an IID vector prior, `beta ~ MvNormal(...)` is much
-faster under reverse-mode AD than a loop of `beta[j] ~`.
-
-## Predictive sampling needs the output shape
+### Predictive sampling needs the output shape
 
 For a `.~` or looped `y[i] ~` observe, pass `fill(missing, n)` for the data,
 not a bare `missing`:
 
 ```julia
-predict(model(X, fill(missing, n)), chain_draws(chn))
+predict(model(X, fill(missing, n)), chn)
 ```
 
-## Warm-up draws are kept unless you discard them
+### `:=` marks data, and is not stored in the chain
 
-Turing drops the adaptation draws by default; PracticalBayes keeps them. Pass
-`discard_initial`:
+In Turing, `z := expr` adds `z` to the chain. In PracticalBayes it is an
+assignment that makes `z` count as data for a later `z ~ dist`, and it is not
+stored. Return derived quantities from the model and read them with
+`returned(model, chn)`. See [Data and parameters: `:=`](@ref).
 
-```julia
-sample(model, NUTS(0.8), 1000; n_adapts=1000, discard_initial=1000)
-```
-
-## Only whole variables can be conditioned
+### Only whole variables can be conditioned
 
 `model | (; y = data)` works; `model | (; x[3] = 5.0)` does not.
 
-## Float32 needs explicit literals
+### Float32 needs explicit literals
 
 See [Run a model in Float32](@ref).
 
-## Model arguments cannot be `Val` type parameters
+### Using both packages at once
 
-`f(::Val{x}) where {x}` is not supported. Pass a plain value and branch on it.
-
-## Names that clash
-
-`@model`, `Model`, `LogDensityFunction`, `filldist` and `arraydist` are
-exported by both packages. With both loaded, `import` one and qualify its
-names:
+PracticalBayes installs alongside current Turing, but many names, among them
+`@model`, `NUTS`, `Gibbs`, `PG` and `filldist`, are exported by both. With both
+loaded, `import` one and qualify its names:
 
 ```julia
 using PracticalBayes
 import Turing
 ```
 
-## Chains
+### Vector parameters in chains
 
-[`sample`](@ref) returns a FlexiChains [`SymChain`](@ref), as Turing 0.45 does.
-A vector parameter is one entry holding whole vectors, so `chn[:beta][:, 2]` is
-the second chain, not `beta[2]`. Use [`param_draws`](@ref):
+A vector parameter is one chain entry holding whole vectors, so
+`chn[:beta][:, 2]` is the second chain, not `beta[2]`. Use
+[`param_draws`](@ref):
 
 ```julia
 param_draws(chn, :beta, 2)
-```
-
-Multiple chains work as in Turing, with `MCMCThreads` from AbstractMCMC:
-
-```julia
-using AbstractMCMC: MCMCThreads
-chn = sample(model, NUTS(0.8), MCMCThreads(), N, 4)
 ```

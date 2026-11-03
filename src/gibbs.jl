@@ -18,8 +18,9 @@ _normalize_block_names(t::Tuple{Vararg{Symbol}}) = t
 
 One block of a `Gibbs` sampler: `names` (a `Symbol` or `Tuple` of `Symbol`s)
 identifies which model variables this block owns; `kernel` is either an
-`AbstractHMCSampler` (e.g. `NUTS(0.8)`, sampled via AdvancedHMC) or an
-`AbstractLatentKernel` (a user-supplied non-HMC sampler, see latent.jl).
+AbstractMCMC sampler over the block's unconstrained parameters (e.g.
+`NUTS(0.8)`, or AdvancedMH's `RWMH`) or an `AbstractLatentKernel` (see
+latent.jl), such as [`PG`](@ref) or a hand-written FFBS kernel.
 """
 struct GibbsBlock{K,N<:Tuple{Vararg{Symbol}}}
     names::N
@@ -35,17 +36,18 @@ Each pair maps a variable name, or a tuple of names, to the sampler for that
 block:
 
 - an HMC sampler (`NUTS`, `HMC`, [`AdaptiveHMC`](@ref),
-  [`NUTSthenHMC`](@ref)), which takes one step on the block's continuous
-  parameters with every other variable held fixed;
-- an [`AbstractLatentKernel`](@ref), such as [`ConjugateGibbs`](@ref) or your
-  own, which draws the block's new values directly.
+  [`NUTSthenHMC`](@ref)) or another AbstractMCMC sampler that works on a log
+  density, which takes one step on the block's continuous parameters with every
+  other variable held fixed;
+- a latent kernel ([`PG`](@ref), [`ConjugateGibbs`](@ref) or your own
+  [`AbstractLatentKernel`](@ref)), which draws the block's new values directly.
 
 Every parameter of the model must be in exactly one block, and discrete
 parameters need a latent kernel. Run it with [`sample`](@ref); pass `n_adapts`
 there and keep it the same for the whole run.
 
 ```julia
-spl = Gibbs((:α, :β) => NUTS(0.8), :p => pk, :z => AllocationKernel())
+spl = Gibbs((:α, :β) => NUTS(), :p => pk, :z => AllocationKernel())
 chn = sample(model, spl, 1000; n_adapts=500, discard_initial=500)
 ```
 """
@@ -106,8 +108,8 @@ end
 # discrete/latent-role name assigned to an HMC block.
 # ===========================================================================
 
-function _validate_gibbs_coverage(model::Model, spl::Gibbs)
-    tmode = TraceMode(Random.default_rng(), model.conditioned, NamedTuple())
+function _validate_gibbs_coverage(model::Model, spl::Gibbs, rng=Random.default_rng())
+    tmode = TraceMode(rng, model.conditioned, NamedTuple())
     evaluate(model, tmode, Accum(0.0))
     records = [r for r in tmode.sites]
     assumed = filter(r -> r.role != :observed, records)
@@ -132,9 +134,10 @@ function _validate_gibbs_coverage(model::Model, spl::Gibbs)
     for (i, b) in enumerate(spl.blocks), n in b.names
         if !_is_latent_block(b) && get(role_by_name, n, :param) == :latent
             throw(ArgumentError(
-                "block $i assigns discrete/latent variable `$n` to $(typeof(b.kernel)), an HMC-family " *
-                "sampler — discrete variables need an `AbstractLatentKernel` instead (e.g. a hand-written " *
-                "FFBS/conjugate-Gibbs kernel), since there's no continuous unconstrained encoding for them.",
+                "block $i assigns discrete/latent variable `$n` to $(typeof(b.kernel)), a sampler over " *
+                "unconstrained continuous parameters — discrete variables need an `AbstractLatentKernel` " *
+                "instead (e.g. `PG(n)`, or a hand-written FFBS/conjugate-Gibbs kernel), since there's no " *
+                "continuous unconstrained encoding for them.",
             ))
         end
     end
@@ -197,6 +200,8 @@ function _init_block_sub(model::Model, block::GibbsBlock, values0::NamedTuple; a
     if _is_latent_block(block)
         return GibbsLatentSub()
     end
+    # A block whose sampler carries its own backend (`NUTS(; adtype=...)`) uses it.
+    adtype = _block_adtype(block.kernel, adtype)
     other_names = Tuple(k for k in keys(values0) if !(k in block.names))
     own_init = NamedTuple{block.names}(Tuple(values0[k] for k in block.names))
     layout, θ0, _ = build_layout(model; flat=block.names, values=other_names, init=own_init)
@@ -222,7 +227,7 @@ block, starts from `init` or the prior, and returns `(values, state)`. Every
 HMC block uses the same `adtype`.
 """
 function AbstractMCMC.step(rng::Random.AbstractRNG, model::Model, spl::Gibbs; init=NamedTuple(), adtype=AutoForwardDiff(), kwargs...)
-    records = _validate_gibbs_coverage(model, spl)
+    records = _validate_gibbs_coverage(model, spl, rng)
     values0 = _gibbs_init_values(records, init)
     subs0 = ntuple(i -> _init_block_sub(model, spl.blocks[i], values0; adtype=adtype), length(spl.blocks))
     state = GibbsState(values0, subs0)
@@ -260,6 +265,7 @@ function AbstractMCMC.step(rng::Random.AbstractRNG, model::Model, spl::Gibbs, st
 
             ldf = LogDensityFunction(model, sub.layout, store, sub.adtype, sub.prep, false)
             ldm = AbstractMCMC.LogDensityModel(ldf)
+            spl_i = _block_sampler(block.kernel)   # unwraps `NUTS(; adtype=...)`
 
             if sub.hmc_state === nothing
                 # `n_adapts` MUST be passed here, not only on subsequent steps.
@@ -277,10 +283,14 @@ function AbstractMCMC.step(rng::Random.AbstractRNG, model::Model, spl::Gibbs, st
                 # without `n_adapts` on the first step: without it the adaptor
                 # reports `window(0, 0)` and `M⁻¹ ≈ I`; with it, `window(76, 150)`
                 # and a correctly recovered metric.
-                _, hmc_state = AbstractMCMC.step(rng, ldm, block.kernel; initial_params=θ_now, n_adapts=n_adapts, kwargs...)
+                _, hmc_state = AbstractMCMC.step(rng, ldm, spl_i; initial_params=θ_now,
+                                                 _adapt_kwargs(spl_i, n_adapts)..., kwargs...)
             else
+                # `setparams!!` against the NEW `ldm` is what makes a sampler's
+                # cached log density reflect the other blocks' latest values.
                 refreshed = AbstractMCMC.setparams!!(ldm, sub.hmc_state, θ_now)
-                _, hmc_state = AbstractMCMC.step(rng, ldm, block.kernel, refreshed; n_adapts=n_adapts, kwargs...)
+                _, hmc_state = AbstractMCMC.step(rng, ldm, spl_i, refreshed;
+                                                 _adapt_kwargs(spl_i, n_adapts)..., kwargs...)
             end
             θ_new = AbstractMCMC.getparams(hmc_state)
             newvals = invlink(sub.layout, θ_new; include_untracked=true)
@@ -291,3 +301,8 @@ function AbstractMCMC.step(rng::Random.AbstractRNG, model::Model, spl::Gibbs, st
     newstate = GibbsState(values, Tuple(new_subs))
     return values, newstate
 end
+
+# `n_adapts` is an AdvancedHMC keyword. Other samplers (AdvancedMH etc.) have
+# no adaptation argument of that name, so it is passed to HMC blocks only.
+_adapt_kwargs(::AdvancedHMC.AbstractHMCSampler, n_adapts) = (; n_adapts=n_adapts)
+_adapt_kwargs(_, _) = (;)

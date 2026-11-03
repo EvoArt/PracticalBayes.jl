@@ -1,11 +1,9 @@
 # PracticalBayes.jl
 
-PracticalBayes is a probabilistic programming package for Julia, and a work in
-progress. It is built largely from the building blocks of the Turing ecosystem
+PracticalBayes is a WIP probabilistic programming package for Julia. It is built largely from the building blocks of the Turing ecosystem
 (AbstractPPL, AdvancedHMC, Bijectors, Distributions, LogDensityProblems and
 FlexiChains), with its own model evaluation and some changes so that it works
-well with the PracticallyBayesian packages. It does not use DynamicPPL or
-Turing itself.
+well with the PracticallyBayesian packages.
 
 Models are written with Turing-style `@model` and `~` syntax and sampled with
 HMC/NUTS, alone or as blocks of a Gibbs sampler.
@@ -20,23 +18,18 @@ using PracticalBayes, Distributions
     y .~ Normal.(α .+ β .* x, σ)
 end
 
-chn = sample(linreg(x, y), NUTS(0.8), 1000; n_adapts=1000, discard_initial=1000)
-```
-
-Install it from GitHub:
-
-```julia
-using Pkg
-Pkg.add(url="https://github.com/EvoArt/PracticalBayes")
+chn = sample(linreg(x, y), NUTS(), 1000)
 ```
 
 ## What is different here
 
-- **Samplers you write yourself, outside the gradient.** A block of a `Gibbs`
-  sampler can be your own [`AbstractLatentKernel`](@ref), alongside NUTS and
-  conjugate blocks. It runs once per sweep and is never differentiated, so it
-  can update discrete or very large latent variables with any code. See
-  [Sample with Gibbs blocks](@ref).
+- **Latent kernels as plain functions.** A `Gibbs` block can be your own
+  [`AbstractLatentKernel`](@ref): one `latent_step` method that receives the
+  model's data and the current value of every parameter, and returns new values
+  for its block. It runs once per MCMC step, outside the gradient. It is similar
+  to Turing's `GibbsConditional` and `externalsampler`, but designed to be easy
+  to use with the latent-state samplers of epidemic models, such as those in
+  [EpidemicTrajectories.jl](https://evoart.github.io/EpidemicTrajectories/dev/tutorials/cattle_iffbs/). See [Sample with Gibbs blocks](@ref).
 - **Float32.** A model can run in Float32 end to end, with a few rules about
   literals. See [Run a model in Float32](@ref).
 - **Trimmable models.** A simple model can be compiled into a standalone
@@ -49,6 +42,7 @@ Pkg.add(url="https://github.com/EvoArt/PracticalBayes")
 ## Where to go next
 
 - New to the package: the [Tutorial](@ref).
-- Coming from Turing: [Port a model from Turing](@ref).
-- Every exported name: the [Reference](@ref).
+- Coming from Turing: [Port a model from Turing](@ref). The
+  [Turing tutorials](https://turinglang.org/docs/tutorials/) can be followed
+  with PracticalBayes with minimal changes.
 - How the pieces fit together: the [Explanation](@ref).

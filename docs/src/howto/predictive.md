@@ -23,35 +23,38 @@ sims[1].y
 
 ## Draw from the posterior predictive
 
-Turn the chain into a vector of draws with [`chain_draws`](@ref), then call
-[`predict`](@ref) on the model with missing data:
+Call [`predict`](@ref) on the model with missing data. It returns a chain of
+the predicted variables:
 
 ```julia
-draws = chain_draws(chn)
-preds = predict(linreg(x_new, fill(missing, length(x_new))), draws)
-yrep = reduce(hcat, p.y for p in preds)    # one column per draw
+preds = predict(linreg(x_new, fill(missing, length(x_new))), chn)
+yrep = reduce(hcat, preds[:y])    # one column per draw
 ```
 
-For a `.~` statement the missing data must have the output's shape, as
-`fill(missing, n)` does. A bare `missing` works for a `~` statement.
+For a `.~` or looped `y[i] ~` statement the missing data must have the
+output's shape, as `fill(missing, n)` does. A bare `missing` works for `y ~`.
+To free observations bound with [`condition`](@ref), use
+`predict(decondition(model), chn)`.
 
 ## Compute a derived quantity per draw
 
 End the model with `return expr`, for example `return α + β` for the fitted
-value at `x = 1`, then call [`returned`](@ref) on each draw:
+value at `x = 1`. [`returned`](@ref) gives its value at every draw, as a
+draws × chains matrix:
 
 ```julia
-fitted_at_1 = [returned(model, d) for d in draws]
+fitted_at_1 = returned(model, chn)
 ```
 
 ## Get pointwise log-likelihoods for LOO
 
-[`pointwise_loglikelihoods`](@ref) gives one log-likelihood per observation.
+[`pointwise_loglikelihoods`](@ref) gives one log-likelihood per observation at
+one draw; [`chain_draws`](@ref) turns the chain into a vector of draws.
 With `flatten=true`, stack them into the observations × draws matrix that
 PSIS-LOO tools such as ParetoSmooth.jl take:
 
 ```julia
-ll = reduce(hcat, pointwise_loglikelihoods(model, d; flatten=true) for d in draws)
+ll = reduce(hcat, pointwise_loglikelihoods(model, d; flatten=true) for d in chain_draws(chn))
 ```
 
 For the summed value at one point, use [`loglikelihood_at`](@ref); for the
