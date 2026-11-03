@@ -73,7 +73,7 @@ This is the check for the one hazard `depends=` carries. Over-declaring is
 harmless -- it only forgoes a speed-up -- and is not reported as a failure.
 
 Returns a [`DependsReport`](@ref); `report.ok` is `false` if any block
-mismatched. Latent blocks are skipped: they never build a `LogDensityFunction`
+mismatched. Kernel blocks are skipped: they never build a `LogDensityFunction`
 and never touch AD, so there is no gradient to compare.
 
 `atol` exists only for backends whose gradients are not bit-reproducible across
@@ -127,7 +127,7 @@ function check_depends(
     ok = true
 
     for (i, block) in enumerate(spl.blocks)
-        _is_latent_block(block) && continue          # no gradient to compare
+        _is_kernel_block(block) && continue          # no gradient to compare
 
         own = block.names
         other = Tuple(k for k in all_names if !(k in own))

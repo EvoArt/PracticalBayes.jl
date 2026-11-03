@@ -1,4 +1,4 @@
-# Tests for src/particle_gibbs.jl — the `PG` (conditional SMC) latent kernel.
+# Tests for src/particle_gibbs.jl — the `PG` (conditional SMC) Gibbs kernel.
 #
 # Exactness is checked against posteriors computed by ENUMERATING every latent
 # trajectory, so a wrong weight, a wrong resampling step, or a reference

@@ -1,4 +1,4 @@
-# Particle Gibbs: a generic latent kernel for discrete (or any non-differentiable)
+# Particle Gibbs: a generic Gibbs kernel for discrete (or any non-differentiable)
 # Gibbs blocks, via conditional sequential Monte Carlo (CSMC; Andrieu, Doucet &
 # Holenstein 2010). It is what Turing's `PG` is, and it lets a model whose
 # latent block has no hand-written FFBS/conjugate kernel still be sampled.
@@ -24,7 +24,7 @@
 # so a sweep costs O(J^2) site visits per particle for J weighting sites, where
 # a pausing implementation costs O(J). For the models PG is the right tool for
 # (tens to a few hundred observations) that is cheap next to the resampling;
-# for long series an exact kernel (FFBS, see latent.jl) is far better anyway.
+# for long series an exact kernel (FFBS, see gibbs_kernel.jl) is far better anyway.
 #
 # Replaying by visit ORDER is exact: a particle's earlier values are replayed,
 # so its control flow up to the stop point is the same as when they were drawn.
@@ -39,7 +39,7 @@
 """
     PG(n_particles)
 
-Particle Gibbs latent kernel: resamples a [`Gibbs`](@ref) block from its full
+Particle Gibbs kernel: resamples a [`Gibbs`](@ref) block from its full
 conditional with conditional sequential Monte Carlo, using `n_particles`
 particles (at least 2). Use it for discrete latent variables that have no
 closed-form or hand-written kernel:
@@ -58,12 +58,12 @@ Each sweep re-runs the model once per particle per observation (see the
 implementation notes in `src/particle_gibbs.jl`), so cost grows with the square
 of the number of observe statements. For hidden Markov models and similar
 chain-structured latents an exact forward-filtering/backward-sampling kernel
-(see [`latent_step`](@ref)) is both faster and mixes better.
+(see [`gibbs_step`](@ref)) is both faster and mixes better.
 
 Mirrors Turing's `PG`, so `Gibbs(:s => PG(100), ...)` from a Turing tutorial
 runs unchanged.
 """
-struct PG <: AbstractLatentKernel
+struct PG <: AbstractGibbsKernel
     n_particles::Int
     function PG(n_particles::Integer)
         n_particles >= 2 || throw(ArgumentError(
@@ -257,7 +257,7 @@ function _pg_assemble(p::_Particle, block_names, values::NamedTuple)
     return NamedTuple{block_names}(vals)
 end
 
-function latent_step(rng, k::PG, block_names, c::ModelConditional)
+function gibbs_step(rng, k::PG, block_names, c::ModelConditional)
     model = c.model
     P = k.n_particles
     m = ParticleMode{block_names,typeof(rng),typeof(c.values),typeof(model.conditioned)}(

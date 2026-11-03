@@ -134,7 +134,7 @@ with no PracticalBayes code specific to that package.
 `discard_initial` and `thinning` have their usual AbstractMCMC meanings, and
 `chain_type=nothing` returns the sampler's raw transitions. Every variable must
 be continuous: a discrete one has no unconstrained encoding, so models with
-discrete latents need [`Gibbs`](@ref) with a latent kernel for those variables
+discrete latents need [`Gibbs`](@ref) with a Gibbs kernel for those variables
 (e.g. [`PG`](@ref)).
 """
 function AbstractMCMC.sample(
@@ -180,8 +180,8 @@ _sampler_stats(state) = applicable(AbstractMCMC.getstats, state) ? AbstractMCMC.
 
 Run a [`Gibbs`](@ref) sampler on `model` for `N` sweeps and return the draws.
 
-Each sweep updates every block once (NUTS for HMC blocks, `latent_step` for
-latent-kernel blocks). By default the result is a `FlexiChains.SymChain` with
+Each sweep updates every block once (NUTS for HMC blocks, `gibbs_step` for
+Gibbs-kernel blocks). By default the result is a `FlexiChains.SymChain` with
 one key per model variable. `discard_initial` drops that many leading sweeps
 (burn-in); `n_adapts` is passed to every HMC block on every sweep and, as with
 AdvancedHMC generally, should be its final target value from the first sweep on

@@ -3,9 +3,9 @@
 # In this tutorial we fit a model that combines continuous parameters with a
 # large discrete latent variable — a hidden state trajectory — using a `Gibbs`
 # sampler that updates the parameters with NUTS and the trajectory with a custom
-# latent kernel.
+# Gibbs kernel.
 #
-# This is the pattern PracticalBayes' [`AbstractLatentKernel`](@ref) interface is
+# This is the pattern PracticalBayes' [`AbstractGibbsKernel`](@ref) interface is
 # built for: a block of variables that should not go through HMC (here, a
 # discrete infection-state matrix) is updated by a sampler you supply, once per
 # Gibbs sweep, while the continuous parameters are differentiated as usual and
@@ -23,7 +23,7 @@
 #
 # 1. simulate data from known parameters,
 # 2. reserve the hidden trajectory as a discrete latent variable,
-# 3. write a latent kernel that resamples it,
+# 3. write a Gibbs kernel that resamples it,
 # 4. compose a `Gibbs` sampler and run it, and
 # 5. plot the posterior against the values we simulated from.
 
@@ -94,15 +94,15 @@ Base.size(d::TrajectoryLatent) = (d.n_ind, d.n_times)
 Distributions.logpdf(::TrajectoryLatent, X::AbstractMatrix) = 0.0
 Distributions.rand(rng::Random.AbstractRNG, d::TrajectoryLatent) = zeros(Int, d.n_ind, d.n_times)
 
-# ## Write the latent kernel
+# ## Write the Gibbs kernel
 #
-# A latent kernel is a subtype of [`AbstractLatentKernel`](@ref) with one method,
-# [`latent_step`](@ref), returning a `NamedTuple` of new values for its block. It
+# A Gibbs kernel is a subtype of [`AbstractGibbsKernel`](@ref) with one method,
+# [`gibbs_step`](@ref), returning a `NamedTuple` of new values for its block. It
 # reads the current values of the other blocks from `c.values` and resamples the
 # whole trajectory in place with `em.latent!`.
 
-struct iFFBSKernel <: PracticalBayes.AbstractLatentKernel end
-function PracticalBayes.latent_step(rng, ::iFFBSKernel, block_names, c::ModelConditional)
+struct iFFBSKernel <: PracticalBayes.AbstractGibbsKernel end
+function PracticalBayes.gibbs_step(rng, ::iFFBSKernel, block_names, c::ModelConditional)
     pars = (; α = c.values.α, β = c.values.β, m = c.values.m̃ + 1.0, θ = c.values.θ)
     X = copy(c.values.X)
     em.latent!(rng, pars, X, data; initial_prob = [1 - c.values.ν, c.values.ν])
@@ -112,17 +112,17 @@ end
 # ``\nu`` and ``\theta`` have closed-form conditional posteriors, so we give them
 # conjugate kernels too — the same one-struct, one-method pattern.
 
-struct NuKernel <: PracticalBayes.AbstractLatentKernel end
-function PracticalBayes.latent_step(rng, ::NuKernel, block_names, c::ModelConditional)
+struct NuKernel <: PracticalBayes.AbstractGibbsKernel end
+function PracticalBayes.gibbs_step(rng, ::NuKernel, block_names, c::ModelConditional)
     x1 = @view c.values.X[:, 1]
     n_inf = count(==(1), x1)
     return (; ν = rand(rng, Beta(1 + n_inf, 1 + length(x1) - n_inf)))
 end
 
-struct ThetaKernel <: PracticalBayes.AbstractLatentKernel
+struct ThetaKernel <: PracticalBayes.AbstractGibbsKernel
     results::Matrix{Int}
 end
-function PracticalBayes.latent_step(rng, k::ThetaKernel, block_names, c::ModelConditional)
+function PracticalBayes.gibbs_step(rng, k::ThetaKernel, block_names, c::ModelConditional)
     X, R = c.values.X, k.results
     n_pos = n_inf = 0
     for t in axes(R, 2), i in axes(R, 1)
@@ -207,4 +207,4 @@ fig
 # Every posterior concentrates around the value we simulated from. The `Gibbs`
 # sampler updated the continuous parameters with NUTS and the hidden trajectory
 # with our iFFBS kernel, and the latent trajectory never entered a gradient
-# calculation — exactly what the latent-kernel interface is for.
+# calculation — exactly what the Gibbs-kernel interface is for.

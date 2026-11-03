@@ -1,6 +1,6 @@
-# Tests for src/gibbs.jl + src/latent.jl — the three M3 milestone gates
+# Tests for src/gibbs.jl + src/gibbs_kernel.jl — the three M3 milestone gates
 # (see the design plan's "M3 implementation plan" section):
-#   (a) an exact-conditional latent kernel matches the analytically-computed
+#   (a) an exact-conditional Gibbs kernel matches the analytically-computed
 #       joint posterior of a small conjugate model;
 #   (b) a 2-state Gaussian HMM sampled via Gibbs(NUTS, NUTS, FFBS-kernel)
 #       matches NUTS run directly on the same model with the discrete state
@@ -40,8 +40,8 @@ using PracticalBayes: AdaptiveHMC
         y ~ Normal(z, 0.5)
     end
 
-    struct ExactNormalKernel <: AbstractLatentKernel end
-    function PracticalBayes.latent_step(rng, ::ExactNormalKernel, block_names, c::ModelConditional)
+    struct ExactNormalKernel <: AbstractGibbsKernel end
+    function PracticalBayes.gibbs_step(rng, ::ExactNormalKernel, block_names, c::ModelConditional)
         block_names == (:z,) || error("this test kernel only handles the `:z` block")
         y = c.model.args.y
         mu = c.values.mu
@@ -129,8 +129,8 @@ end
         y .~ Normal.(mu, sigma)
     end
 
-    struct FFBS <: AbstractLatentKernel end
-    function PracticalBayes.latent_step(rng, ::FFBS, block_names, c::ModelConditional)
+    struct FFBS <: AbstractGibbsKernel end
+    function PracticalBayes.gibbs_step(rng, ::FFBS, block_names, c::ModelConditional)
         block_names == (:z,) || error("this FFBS kernel only handles the `:z` block")
         y = c.model.args.y
         p_stay, sigma = c.values.p_stay, c.values.sigma
@@ -239,11 +239,11 @@ end
         y ~ Normal(mu + z, 0.5)
     end
 
-    struct DualCheckKernel <: AbstractLatentKernel end
-    function PracticalBayes.latent_step(rng, ::DualCheckKernel, block_names, c::ModelConditional)
+    struct DualCheckKernel <: AbstractGibbsKernel end
+    function PracticalBayes.gibbs_step(rng, ::DualCheckKernel, block_names, c::ModelConditional)
         block_names == (:z,) || error("bad block")
-        @assert eltype([c.values.mu]) <: Union{Float32,Float64} "latent kernel saw a non-plain-float value: $(typeof(c.values.mu))"
-        @assert !(c.values.mu isa ForwardDiff.Dual) "latent kernel saw a Dual!"
+        @assert eltype([c.values.mu]) <: Union{Float32,Float64} "Gibbs kernel saw a non-plain-float value: $(typeof(c.values.mu))"
+        @assert !(c.values.mu isa ForwardDiff.Dual) "Gibbs kernel saw a Dual!"
         return (; z=rand(rng, Normal(c.values.mu, 1.0)))
     end
 
@@ -296,11 +296,11 @@ end
     end
 
     # Kernel: resample every cell as Bernoulli(logistic(mu)). Returns a Matrix{Int}.
-    struct GridKernel <: AbstractLatentKernel
+    struct GridKernel <: AbstractGibbsKernel
         nrows::Int
         ncols::Int
     end
-    function PracticalBayes.latent_step(rng, k::GridKernel, block_names, c::ModelConditional)
+    function PracticalBayes.gibbs_step(rng, k::GridKernel, block_names, c::ModelConditional)
         block_names == (:X,) || error("only :X")
         p = 1 / (1 + exp(-c.values.mu))
         return (; X=Int.(rand(rng, k.nrows, k.ncols) .< p))
