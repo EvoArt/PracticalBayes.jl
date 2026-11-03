@@ -29,11 +29,18 @@ statistic (`log_density`, `acceptance_rate`, `n_steps`, ...) is an
 `Extra(:stat_name)` key. Index and summarize the result as usual: `chn[:mu]`,
 `chn[Extra(:n_steps)]`, `summarystats(chn)`.
 
-`n_adapts` (default `min(N ÷ 10, 1000)`, AdvancedHMC's own default) sets the
-number of step-size/metric adaptation iterations. `discard_initial` (default 0)
-runs and drops that many iterations before the `N` kept ones, and `thinning`
-(default 1) keeps every `thinning`-th iteration after that — the standard
-AbstractMCMC meanings. To drop warm-up, pass `discard_initial=n_adapts`.
+`n_adapts` (default `min(1000, N ÷ 2)`) sets the number of step-size/metric
+adaptation iterations, and `discard_initial` (default `n_adapts`) runs and
+drops that many iterations before the `N` kept ones — so by default the chain
+holds `N` draws taken AFTER warm-up, exactly as Turing's `sample` does. Pass
+`discard_initial=0` to keep the warm-up draws. `thinning` (default 1) keeps
+every `thinning`-th iteration after the discarded ones — the standard
+AbstractMCMC meaning.
+
+These are Turing's defaults, not AdvancedHMC's (`min(N ÷ 10, 1000)` adaptation
+steps, nothing discarded): a chain that silently includes unconverged warm-up
+draws biases every summary taken from it, and Turing code ported to
+PracticalBayes should get the same chain it got before.
 
 The parameter vector uses the sampler's float type
 (`AdvancedHMC.sampler_eltype(spl)`), so `NUTS(0.8f0)` samples in Float32 and
@@ -63,6 +70,8 @@ function AbstractMCMC.sample(
     init=NamedTuple(),
     chain_type=SymChain,
     progress=default_progress(),
+    n_adapts::Int=min(1_000, div(N, 2)),
+    discard_initial::Int=n_adapts,
     kwargs...,
 )
     # Build θ0 in the SAMPLER's float type, not a hardcoded Float64. AdvancedHMC
@@ -73,21 +82,95 @@ function AbstractMCMC.sample(
     # prepared θ and the sampled θ identical; for the usual `NUTS(0.8)` this is
     # Float64, i.e. exactly what was built before.
     T = AdvancedHMC.sampler_eltype(spl)
-    layout, θ0, store0 = build_layout(model; init=init, T=T)
+    # `rng=rng`: the starting point is drawn from the prior, and it must come
+    # from the caller's RNG or `sample(StableRNG(1), ...)` is not reproducible
+    # (it used the global RNG until 2026-11-01).
+    layout, θ0, store0 = build_layout(model; init=init, T=T, rng=rng)
     ldf = LogDensityFunction(model, layout, store0, adtype; θ0=θ0)
     ldm = AbstractMCMC.LogDensityModel(ldf)
 
-    # AbstractMCMC's own sampling loop already knows how to draw a progress bar,
-    # so hand `progress` straight to it rather than wrapping a second one around.
+    # `n_adapts` travels on to every `step` call through `kwargs`; see
+    # `_pb_sample_transitions` for why it must be supplied explicitly here.
+    #
+    # `chain_type=nothing` runs the SAME loop and keeps the raw transitions.
+    # It used to hand off to AdvancedHMC's own `sample`, whose progress meter
+    # (`HMCProgressCallback`) only accepts an `HMCState` — so PB's own HMC
+    # samplers with their own state type (`NUTSthenHMC`) threw a MethodError
+    # there whenever progress was on. One loop for both outputs also means the
+    # raw and chain paths cannot disagree on warm-up, discard or thinning.
+    record = chain_type === nothing ? (t, _) -> t : (t, _) -> _pb_transition_to_nt(model, layout, t)
+    transitions, state = _pb_sample_transitions(rng, ldm, spl, N, record;
+                                                initial_params=θ0, progress=progress,
+                                                n_adapts=n_adapts, discard_initial=discard_initial, kwargs...)
+    chain_type === nothing && return transitions
+    return AbstractMCMC.bundle_samples(transitions, ldm, spl, state, chain_type)
+end
+
+# `NUTS(; adtype=...)` (nuts.jl): the sampler's own backend becomes `sample`'s
+# `adtype`. An explicit `adtype=` keyword to `sample` is overridden by it, as
+# the sampler's is the more specific request.
+function AbstractMCMC.sample(rng::Random.AbstractRNG, model::Model, spl::_ADSampler, N::Integer; kwargs...)
+    return AbstractMCMC.sample(rng, model, spl.sampler, N; kwargs..., adtype=spl.adtype)
+end
+
+"""
+    sample(rng, model::Model, spl::AbstractMCMC.AbstractSampler, N;
+           adtype=AutoForwardDiff(), init=NamedTuple(), chain_type=SymChain,
+           kwargs...)
+
+Run any AbstractMCMC sampler that works on a log density — e.g. AdvancedMH's
+`RWMH`/`MALA`, or a slice sampler — on `model`, and return the draws as a
+`SymChain` like the HMC method above.
+
+The sampler sees the model as an `AbstractMCMC.LogDensityModel` over the flat
+UNCONSTRAINED parameter vector (the same one NUTS samples), with a gradient
+attached via `adtype` for samplers that want one. Each kept state is mapped
+back to constrained, named parameters through `AbstractMCMC.getparams`, and the
+sampler's per-iteration statistics come from `AbstractMCMC.getstats` (empty if
+the sampler does not implement it). Those two functions are AbstractMCMC's own
+sampler interface, so this works for any sampler package that implements it,
+with no PracticalBayes code specific to that package.
+
+`discard_initial` and `thinning` have their usual AbstractMCMC meanings, and
+`chain_type=nothing` returns the sampler's raw transitions. Every variable must
+be continuous: a discrete one has no unconstrained encoding, so models with
+discrete latents need [`Gibbs`](@ref) with a latent kernel for those variables
+(e.g. [`PG`](@ref)).
+"""
+function AbstractMCMC.sample(
+    rng::Random.AbstractRNG,
+    model::Model,
+    spl::AbstractMCMC.AbstractSampler,
+    N::Integer;
+    adtype=ADTypes.AutoForwardDiff(),
+    init=NamedTuple(),
+    chain_type=SymChain,
+    progress=default_progress(),
+    kwargs...,
+)
+    layout, θ0, store0 = build_layout(model; init=init, rng=rng)
+    ldf = LogDensityFunction(model, layout, store0, adtype; θ0=θ0)
+    ldm = AbstractMCMC.LogDensityModel(ldf)
+
     if chain_type === nothing
         return AbstractMCMC.sample(rng, ldm, spl, N; initial_params=θ0, progress=progress, kwargs...)
     end
 
-    raw_transitions, state = _pb_sample_transitions(rng, ldm, spl, N; initial_params=θ0,
-                                                    progress=progress, kwargs...)
-    nt_transitions = [_pb_transition_to_nt(layout, t) for t in raw_transitions]
-    return AbstractMCMC.bundle_samples(nt_transitions, ldm, spl, state, chain_type)
+    # Read each kept draw off the sampler's STATE rather than its transition:
+    # `getparams(model, state)` is the interface every compliant sampler
+    # implements, whereas transition types differ package to package.
+    record = function (_, state)
+        params = invlink(layout, AbstractMCMC.getparams(ldm, state))
+        return PBTransitionNT(params, merge(_sampler_stats(state), _density_stats(model, params)))
+    end
+    transitions, state = _pb_sample_transitions(rng, ldm, spl, N, record;
+                                                initial_params=θ0, progress=progress, kwargs...)
+    return AbstractMCMC.bundle_samples(transitions, ldm, spl, state, chain_type)
 end
+
+# `getstats` is optional in AbstractMCMC's interface: a sampler that does not
+# implement it simply contributes no `Extra` keys to the chain.
+_sampler_stats(state) = applicable(AbstractMCMC.getstats, state) ? AbstractMCMC.getstats(state) : NamedTuple()
 
 """
     sample(rng, model::Model, spl::Gibbs, N;
@@ -283,19 +366,23 @@ end
 # the chain-building rather than a bespoke `FlexiChain{Symbol}` method here.
 #
 # Because this loop calls `step` directly rather than going through
-# `AbstractMCMC.sample`, it has to supply the three things that wrapper would:
+# `AbstractMCMC.sample`, it has to supply the things that wrapper would:
 #
-#   * `n_adapts`: `step` itself defaults to 0, i.e. NO step-size or mass-matrix
-#     adaptation at all. The default here is AdvancedHMC's own `sample` default,
-#     so `chain_type=nothing` (which does go through AdvancedHMC's `sample`) and
-#     the chain path adapt identically.
+#   * `n_adapts` (HMC only): AdvancedHMC's `step` defaults it to 0, i.e. NO
+#     step-size or mass-matrix adaptation at all. The HMC `sample` method above
+#     therefore passes AdvancedHMC's own `sample` default through `kwargs`, so
+#     `chain_type=nothing` (which does go through AdvancedHMC's `sample`) and
+#     the chain path adapt identically. It is not a keyword here because other
+#     samplers have no such argument.
 #   * `discard_initial` / `thinning`: implemented by `AbstractMCMC.mcmcsample`,
 #     not by `step`, so without this they were silently swallowed and the chain
 #     always held every iteration, warm-up included. The step counting below is
 #     mcmcsample's: `1 + discard_initial + thinning * (N - 1)` steps in total,
 #     keeping the last of the discarded run and then every `thinning`-th step.
-function _pb_sample_transitions(rng, ldm, spl, N; initial_params, progress=false,
-                                n_adapts::Int=min(div(N, 10), 1_000),
+#
+# `record(transition, state)` turns each KEPT step into what the chain stores.
+# Converting as we go means only kept draws are ever held, in their final form.
+function _pb_sample_transitions(rng, ldm, spl, N, record; initial_params, progress=false,
                                 discard_initial::Int=0, thinning::Int=1, kwargs...)
     N > 0 || throw(ArgumentError("the number of samples must be ≥ 1, got $N"))
     discard_initial >= 0 || throw(ArgumentError("`discard_initial` must be non-negative, got $discard_initial"))
@@ -308,21 +395,23 @@ function _pb_sample_transitions(rng, ldm, spl, N; initial_params, progress=false
     # cost the same wall-clock time.
     _run_with_progress(progress, "Sampling", total_steps) do p
         done = 1
-        t, state = AbstractMCMC.step(rng, ldm, spl; initial_params=initial_params, n_adapts=n_adapts, kwargs...)
+        t, state = AbstractMCMC.step(rng, ldm, spl; initial_params=initial_params, kwargs...)
         _progress_update!(p, done)
         for _ in 1:discard_initial
-            t, state = AbstractMCMC.step(rng, ldm, spl, state; n_adapts=n_adapts, kwargs...)
+            t, state = AbstractMCMC.step(rng, ldm, spl, state; kwargs...)
             _progress_update!(p, done += 1)
         end
-        transitions[1] = t
+        transitions[1] = record(t, state)
         for i in 2:N
             for _ in 1:thinning
-                t, state = AbstractMCMC.step(rng, ldm, spl, state; n_adapts=n_adapts, kwargs...)
+                t, state = AbstractMCMC.step(rng, ldm, spl, state; kwargs...)
                 _progress_update!(p, done += 1)
             end
-            transitions[i] = t
+            transitions[i] = record(t, state)
         end
-        return transitions, state
+        # Every element has the same type, so narrow the `Vector{Any}` before
+        # handing it to `bundle_samples`.
+        return identity.(transitions), state
     end
 end
 
@@ -338,8 +427,26 @@ struct PBTransitionNT{P<:NamedTuple,S<:NamedTuple}
 end
 FlexiChains.to_nt_and_stats(t::PBTransitionNT) = (t.params, t.stats)
 
-function _pb_transition_to_nt(layout::Layout, t::AdvancedHMC.Transition)
+function _pb_transition_to_nt(model, layout::Layout, t::AdvancedHMC.Transition)
     params = invlink(layout, t.z.θ)
-    stats = AdvancedHMC.stat(t)
+    stats = merge(AdvancedHMC.stat(t), _density_stats(model, params))
     return PBTransitionNT(params, stats)
+end
+
+# Turing's chains carry `logprior`, `loglikelihood` and `logjoint` for every
+# draw, on the constrained scale (no Jacobian term), and Turing code reads them
+# (`chn[:logjoint]`). AdvancedHMC's own `log_density` is not that: it is on the
+# unconstrained scale, Jacobian included. One FixedMode evaluation per KEPT
+# draw gives Turing's three exactly — the same cost Turing pays. A point the
+# model cannot score (a `missing` observation, which sampling never needs)
+# reports NaN rather than failing the chain.
+function _density_stats(model, params::NamedTuple)
+    try
+        _, acc, _ = _fixed_evaluate(Random.default_rng(), model, params; predict=false)
+        return (logprior=Float64(logprior(acc)), loglikelihood=Float64(loglikelihood_(acc)),
+                logjoint=Float64(logjoint(acc)))
+    catch e
+        e isa InterruptException && rethrow()
+        return (logprior=NaN, loglikelihood=NaN, logjoint=NaN)
+    end
 end

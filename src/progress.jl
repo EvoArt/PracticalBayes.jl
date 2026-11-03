@@ -31,8 +31,24 @@ Whether [`sample`](@ref) shows a progress meter when `progress` is not passed.
 and test suites (whose output is usually redirected to a file, where a live bar
 is just noise) stay quiet without having to pass `progress=false` everywhere.
 Honours the `CI` environment variable, which the major CI providers set.
+[`setprogress!`](@ref) overrides all of this for the rest of the session.
 """
-default_progress() = isinteractive() && !haskey(ENV, "CI")
+default_progress() = something(_PROGRESS_OVERRIDE[], isinteractive() && !haskey(ENV, "CI"))
+
+# `nothing` until `setprogress!` is called; then the user's choice wins.
+const _PROGRESS_OVERRIDE = Ref{Union{Nothing,Bool}}(nothing)
+
+"""
+    setprogress!(progress::Bool)
+
+Turn the progress meter on or off for every later `sample` call that does not
+pass `progress=` itself, for the rest of the session — Turing's
+`setprogress!`. Without it, the meter follows [`default_progress`](@ref).
+"""
+function setprogress!(progress::Bool)
+    _PROGRESS_OVERRIDE[] = progress
+    return progress
+end
 
 # Whether `logger` will actually render progress records, rather than drop them.
 # `ProgressLevel` sits BELOW `Debug`, so a logger that hasn't opted in reports a
@@ -132,6 +148,41 @@ end
 # Wrap a whole sampling run: install the fallback logger if needed, open the
 # bar, guarantee it is closed even if the sampler throws. `f` receives the
 # progress handle to pass `_progress_update!`.
+# AbstractMCMC's own progress handles. Under `MCMCThreads`/`MCMCDistributed`,
+# AbstractMCMC calls each chain's `sample` with `progress` set to one of ITS
+# progress objects (e.g. a `ChannelProgress` that ticks the overall bar from a
+# worker thread), not a Bool. Drive it through AbstractMCMC's protocol
+# (`init_progress!`/`update_progress!`/`finish_progress!`), sending exactly
+# `get_n_updates(progress)` evenly spaced updates — what its own sampling loop
+# does, and what the overall bar counts on. Only reached when AbstractMCMC
+# hands us such an object, so those names always exist when this runs.
+mutable struct _ForwardedProgress{P}
+    p::P
+    total::Int
+    n_updates::Int
+    sent::Int
+end
+
+function _run_with_progress(f, progress, name::AbstractString, total::Integer)
+    fp = _ForwardedProgress(progress, Int(total), AbstractMCMC.get_n_updates(progress), 0)
+    AbstractMCMC.init_progress!(progress)
+    try
+        return f(fp)
+    finally
+        AbstractMCMC.finish_progress!(progress)
+    end
+end
+
+function _progress_update!(p::_ForwardedProgress, i::Integer)
+    # updates due once `i` of `total` steps are done
+    due = p.total <= 0 ? p.n_updates : min(p.n_updates, (i * p.n_updates) ÷ p.total)
+    while p.sent < due
+        p.sent += 1
+        AbstractMCMC.update_progress!(p.p, i / p.total)
+    end
+    return nothing
+end
+
 function _run_with_progress(f, progress::Bool, name::AbstractString, total::Integer)
     p = _make_progress(progress, name, total)
     p isa NoProgress && return f(p)

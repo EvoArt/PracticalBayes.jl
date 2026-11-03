@@ -6,7 +6,7 @@
 # has precision [5 -4; -4 5], covariance [5 4; 4 5] / 9, mean [2, 2.5] / 9.
 
 using Distributions: Normal
-using AdvancedHMC: NUTS
+# `NUTS` is PracticalBayes' own export (src/nuts.jl), not AdvancedHMC's type.
 using StableRNGs: StableRNG
 import AbstractMCMC
 using Statistics: mean, cov
@@ -37,13 +37,22 @@ end
 @testset "warm_start: tuning is read, carried and kept" begin
     # One block holding every parameter of a GLM-shaped model: the case that
     # takes the closed-form gradient inside Gibbs.
-    spl = Gibbs((:a, :b) => AdaptiveHMC(0.8; n_leapfrog=8, metric=:dense))
+    #
+    # `jitter=true` is load-bearing. A FIXED path length on this correlated
+    # Gaussian can land on a near-periodic orbit for some step sizes and then
+    # barely mixes: across 8 seeds, 2 gave mean errors of 0.2 and 0.84 (MC-SE
+    # ~0.01) without jitter, none above 0.026 with it. The test passed before
+    # only because its RNG stream happened to avoid that; it moved when Gibbs
+    # initialisation started drawing from the caller's RNG (2026-11-01).
+    spl = Gibbs((:a, :b) => AdaptiveHMC(0.8; n_leapfrog=8, metric=:dense, jitter=true))
     _, st = _ws_run(spl, 1500; n_adapts=1000)
     tu = only(hmc_tuning(spl, st))
     @test tu.names == (:a, :b)
     @test tu.metric isa Matrix{Float64}
-    # Stan's regularised windowed estimate of the posterior covariance.
-    @test tu.metric ≈ _WS_COV atol=0.12
+    # Stan's regularised windowed estimate of the posterior covariance. It is
+    # learnt from the last adaptation window alone, so it is noisy: its max
+    # elementwise error over 12 seeds ranged 0.006-0.153.
+    @test tu.metric ≈ _WS_COV atol=0.2
     @test tu.step_size > 0
 
     # n_adapts = 0: used exactly as carried, however long the run.

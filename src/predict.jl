@@ -124,6 +124,72 @@ end
 predict(m::Model, draws) = predict(Random.default_rng(), m, draws)
 
 """
+    predict([rng,] model::Model, chn::SymChain; include_all=false) -> SymChain
+
+Posterior-predictive sampling straight from a chain, as Turing's `predict`
+does: for every draw in `chn`, fix the model's parameters to that draw and
+sample each observe site that has no data. Returns a chain with the same
+iterations and chains as `chn`, holding the predicted variables — or, with
+`include_all=true`, the parameters as well.
+
+The usual way to get a model whose observations are free is to drop the
+conditioning (`predict(decondition(model), chn)`), or to pass `missing` data
+(`predict(regression(x_test, fill(missing, n)), chn)`).
+"""
+function predict(rng::Random.AbstractRNG, m::Model, chn::FlexiChains.SymChain; include_all::Bool=false)
+    params = FlexiChains.parameters(chn)
+    niters, nchains = size(chn[first(params)])
+    vals = [_fixed_evaluate(rng, m, _draw_at(chn, params, i, c); predict=true)[3]
+            for i in 1:niters, c in 1:nchains]
+    # The predicted variables are the ones the model DREW: not a chain
+    # parameter, and not an observe site that already had data.
+    names = [k for k in keys(vals[1]) if (include_all || !(k in params)) && !_has_data(m, k)]
+    data = Dict(FlexiChains.Parameter(k) => [getfield(v, k) for v in vals] for k in names)
+    return FlexiChains.FlexiChain{Symbol}(niters, nchains, data;
+                                         iter_indices=collect(Int, FlexiChains.iter_indices(chn)),
+                                         chain_indices=collect(Int, FlexiChains.chain_indices(chn)))
+end
+predict(m::Model, chn::FlexiChains.SymChain; kwargs...) = predict(Random.default_rng(), m, chn; kwargs...)
+
+"""
+    returned(model::Model, chn::SymChain) -> Matrix
+
+The model body's return value at every draw of `chn`, as an
+`(iterations × chains)` matrix — Turing's `returned(model, chain)`.
+"""
+function returned(m::Model, chn::FlexiChains.SymChain; rng=Random.default_rng())
+    params = FlexiChains.parameters(chn)
+    niters, nchains = size(chn[first(params)])
+    return [returned(m, _draw_at(chn, params, i, c); rng=rng) for i in 1:niters, c in 1:nchains]
+end
+
+# One draw of `chn` as the NamedTuple of parameter values a FixedMode reads.
+_draw_at(chn, params, i, c) = NamedTuple{Tuple(params)}(Tuple(chn[p][i, c] for p in params))
+
+# Whether site `k` is observed data: conditioned, or a model argument that
+# holds a value (not `missing`/`nothing`, nor an array that is all `missing`,
+# which is how a caller asks for that argument to be predicted).
+function _has_data(m::Model, k::Symbol)
+    hasproperty(m.conditioned, k) && return true
+    hasproperty(m.args, k) || return false
+    v = getproperty(m.args, k)
+    return !(v === missing || v === nothing || (v isa AbstractArray && any(ismissing, v)))
+end
+
+"""
+    (model::Model)([rng])
+
+Run `model` once with every parameter drawn from its prior and return the
+model body's return value, as calling a Turing model does (`model()`).
+Observe sites with data keep their data. For the drawn values themselves, use
+`rand(model)`.
+"""
+function (m::Model)(rng::Random.AbstractRNG=Random.default_rng())
+    retval, _ = evaluate(m, PriorMode(rng, m.conditioned), Accum(0.0))
+    return retval
+end
+
+"""
     chain_draws(chn::FlexiChains.SymChain) -> Vector{NamedTuple}
 
 Flattens every (iteration, chain) draw in `chn` into one `Vector{NamedTuple}`

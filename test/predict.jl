@@ -2,7 +2,7 @@
 # moments; predict shapes/names; returned round-trip").
 
 using Distributions: Normal, Exponential, MvNormal
-using AdvancedHMC: NUTS
+# `NUTS` is PracticalBayes' own export (src/nuts.jl), not AdvancedHMC's type.
 using StableRNGs: StableRNG
 import AbstractMCMC
 using Statistics: mean, std

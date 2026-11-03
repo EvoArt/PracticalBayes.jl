@@ -31,7 +31,6 @@ using PracticalBayes
 using EpidemicTrajectories
 using Distributions
 using Random
-using AdvancedHMC: NUTS
 import AbstractMCMC
 using StableRNGs: StableRNG
 using Statistics: mean

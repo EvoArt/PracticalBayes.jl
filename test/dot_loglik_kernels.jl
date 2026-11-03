@@ -66,10 +66,18 @@ import StableRNGs
         # Anything without a kernel must fall through to the generic methods.
         d = Distributions.TDist(4.0)
         @test dl(d, y_n) ≈ Distributions.loglikelihood(d, y_n) rtol=1e-10
-        # array of DIFFERENT distributions: the `sum(logpdf.(...))` fallback
+        # array of DIFFERENT distributions: the lazy-broadcast-sum fallback
         ds = Distributions.Normal.(randn(rng, 50), 1.2)
         yy = randn(rng, 50)
         @test dl(ds, yy) ≈ sum(Distributions.logpdf.(ds, yy)) rtol=1e-10
+        # ... which never materializes the per-observation log-densities
+        dl(ds, yy)
+        @test (@allocated dl(ds, yy)) == 0
+        # ... and keeps broadcasting's shape rules: one distribution per ROW
+        # of a matrix, and a mismatch is still an error, not a silent wrong sum
+        Y = randn(rng, 50, 3)
+        @test dl(ds, Y) ≈ sum(Distributions.logpdf.(ds, Y)) rtol=1e-10
+        @test_throws DimensionMismatch dl(ds, randn(rng, 49))
     end
 
     @testset "end-to-end through a `.~` model" begin

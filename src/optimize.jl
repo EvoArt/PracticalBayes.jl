@@ -119,8 +119,10 @@ const _EXTERNAL_OPTIMIZE_HOOK = Ref{Any}(
 # logdensity.jl) and hands off to `_external_optimize` (Optimization.jl
 # extension).
 function _optimize_point(objective_call, model, layout, store, θ0::AbstractVector, adtype, optimizer; kwargs...)
-    prep = DI.prepare_gradient(objective_call, adtype, θ0, DI.Constant(model), DI.Constant(layout), DI.Constant(store))
-    fg(θ) = DI.value_and_gradient(objective_call, prep, adtype, θ, DI.Constant(model), DI.Constant(layout), DI.Constant(store))
+    # The slots-only `EvalLayout` as the AD constant, as in logdensity.jl.
+    elayout = EvalLayout(layout)
+    prep = DI.prepare_gradient(objective_call, adtype, θ0, DI.Constant(model), DI.Constant(elayout), DI.Constant(store))
+    fg(θ) = DI.value_and_gradient(objective_call, prep, adtype, θ, DI.Constant(model), DI.Constant(elayout), DI.Constant(store))
 
     # Optimization.jl (like most external optimizers) minimizes; we maximize,
     # so negate. `negg!` recomputes the value via `fg` too (and discards it)
@@ -227,7 +229,7 @@ function laplace_approximation(
         model, optimizer; store=store, untracked=untracked, rng=rng, init=init, adtype=adtype, kwargs...
     )
     H = DI.hessian(
-        _logdensity_call, adtype, map_est.theta, DI.Constant(model), DI.Constant(map_est.layout), DI.Constant(map_est.store)
+        _logdensity_call, adtype, map_est.theta, DI.Constant(model), DI.Constant(EvalLayout(map_est.layout)), DI.Constant(map_est.store)
     )
     Σ = Matrix(Symmetric(-inv(H)))
     return LaplaceApproximation(Σ, Matrix(H), map_est)
