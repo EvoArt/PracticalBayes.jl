@@ -12,6 +12,10 @@ dependencies so that it compiles under `juliac --trim`.
 `gradf!(g, x)` must write the gradient of the log density at `x` into `g` and
 return the log density. Warm-up draws are discarded. Returns a
 [`StaticHMCResult`](@ref).
+
+!!! warning
+    Its draws are currently too widely spread on low-dimensional targets. Use
+    [`static_hmc`](@ref) until this is fixed.
 """
 function static_nuts(gradf!::F, x0::Vector{Float64}, n_draws::Int,
                      n_warmup::Int; delta::Float64=0.8, seed::Int=1) where {F}
@@ -147,8 +151,9 @@ end
 
 HMC with a fixed diagonal inverse metric `inv_mass`, step size `eps` and up to
 `L` leapfrog steps, written without dependencies so that it compiles under
-`juliac --trim`. Nothing is adapted, so tune `eps` and `inv_mass` beforehand,
-for example with [`static_nuts`](@ref).
+`juliac --trim`. Nothing is adapted, so choose `eps`, `L` and `inv_mass`
+beforehand, for example by running it under the JIT and checking
+`n_divergent` and `accept_rate`.
 
 `gradf!` is as for [`static_nuts`](@ref). The first `n_warmup` draws are
 discarded. With `jitter=true` the step count is drawn from `1:L` each

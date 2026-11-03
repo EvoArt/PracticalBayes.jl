@@ -4,9 +4,11 @@
 [![Benchmark Sweep](https://github.com/EvoArt/PracticalBayes/actions/workflows/benchmark.yml/badge.svg)](https://github.com/EvoArt/PracticalBayes/actions/workflows/benchmark.yml)
 [![Docs](https://img.shields.io/badge/docs-stable-blue.svg)](https://EvoArt.github.io/PracticalBayes)
 
-PracticalBayes is a probabilistic programming package for Julia. Models are
-written with Turing-style `@model` and `~` syntax and sampled with HMC/NUTS
-from AdvancedHMC, alone or as blocks of a Gibbs sampler.
+PracticalBayes is a probabilistic programming package for Julia, and a work in
+progress. It is built largely from the building blocks of the Turing ecosystem,
+with its own model evaluation and some changes so that it works well with the
+PracticallyBayesian packages. Models are written with Turing-style `@model` and
+`~` syntax and sampled with HMC/NUTS, alone or as blocks of a Gibbs sampler.
 
 ```julia
 using Pkg
@@ -47,10 +49,10 @@ tutorial, how-to guides and the API reference.
 
 ## Relationship to Turing
 
-PracticalBayes builds on parts of the Turing ecosystem (AbstractPPL,
-AdvancedHMC, Bijectors, Distributions, LogDensityProblems) but has its own
-evaluation core and does not use DynamicPPL or Turing. It covers a narrower
-range of models than Turing does. Most Turing models port with small changes;
+PracticalBayes is assembled from Turing ecosystem packages (AbstractPPL,
+AdvancedHMC, Bijectors, Distributions, LogDensityProblems, FlexiChains). It has
+its own model evaluation in place of DynamicPPL, does not depend on Turing
+itself, and covers a narrower range of models. Most Turing models port with small changes;
 see [Port a model from Turing](https://EvoArt.github.io/PracticalBayes/howto/from_turing/).
 
 ## Benchmark summary (auto-updated)

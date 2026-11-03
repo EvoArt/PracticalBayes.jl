@@ -1,9 +1,14 @@
 # PracticalBayes.jl
 
-PracticalBayes is a probabilistic programming package for Julia. Models are
-written with Turing-style `@model` and `~` syntax and sampled with HMC/NUTS
-from AdvancedHMC, alone or as blocks of a Gibbs sampler. Results come back as
-FlexiChains `SymChain`s.
+PracticalBayes is a probabilistic programming package for Julia, and a work in
+progress. It is built largely from the building blocks of the Turing ecosystem
+(AbstractPPL, AdvancedHMC, Bijectors, Distributions, LogDensityProblems and
+FlexiChains), with its own model evaluation and some changes so that it works
+well with the PracticallyBayesian packages. It does not use DynamicPPL or
+Turing itself.
+
+Models are written with Turing-style `@model` and `~` syntax and sampled with
+HMC/NUTS, alone or as blocks of a Gibbs sampler.
 
 ```julia
 using PracticalBayes, Distributions
@@ -40,9 +45,6 @@ Pkg.add(url="https://github.com/EvoArt/PracticalBayes")
 - **GPU data (untested).** Data can be held on a CUDA device. This has not
   yet been run on GPU hardware and is a work in progress. See
   [Keep data on a GPU](@ref).
-
-The package builds on AbstractPPL, AdvancedHMC, Bijectors, Distributions and
-LogDensityProblems. It does not use DynamicPPL or Turing.
 
 ## Where to go next
 

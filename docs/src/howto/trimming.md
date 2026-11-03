@@ -1,29 +1,22 @@
 # Compile a model into a standalone binary
 
-Julia 1.12's `juliac --trim` can compile a simple PracticalBayes model and its
-sampler into an executable that runs without Julia installed. The repository's
-working example is `trimtest/PBTrim`: two parameters, sampled with
-[`static_hmc`](@ref).
+Julia 1.12's `juliac --trim` can compile a simple PracticalBayes model, its
+gradient and its sampler into an executable that runs without Julia installed.
+The gradient comes from Piste, PracticalBayes' trimmable AD backend.
 
-## What a trimmed program can use
-
-- [`@static_model`](@ref) for the model.
-- A layout built at precompile time and stored in a `const`. The binary cannot
-  call [`build_layout`](@ref).
-- A [`LogDensityFunction`](@ref) built without an AD backend, for the density.
-- A gradient you supply yourself.
-- [`static_nuts`](@ref) or [`static_hmc`](@ref) as the sampler.
-
-AdvancedHMC's samplers, DifferentiationInterface backends such as ForwardDiff,
-and [`GradMode`](@ref) do not trim. [`AutoPBForwardDiff`](@ref) is written to
-trim, but the working example does not use it.
+This is experimental. It has been shown to work on small models like the one
+below; check your own model's binary against the same code run normally.
 
 ## Write the program
+
+Put the program in its own package, with PracticalBayes, Piste, Distributions,
+LogDensityProblems and Random as dependencies:
 
 ```julia
 module MyTrim
 
 using PracticalBayes
+import Piste
 using Distributions: Normal, Exponential
 using LogDensityProblems: LogDensityProblems
 using Random: Xoshiro
@@ -34,28 +27,21 @@ using Random: Xoshiro
     y ~ Normal(mu, sigma)
 end
 
+# A trimmed binary cannot inspect the model when it runs, so the log density
+# is built once, when the package is precompiled.
 const M = simple(2.0)
 const LAYOUT, THETA0, STORE0 = build_layout(M; rng=Xoshiro(1234))
-const LDF = LogDensityFunction(M, LAYOUT, STORE0; θ0=THETA0)
+const LDF = LogDensityFunction(M, LAYOUT, STORE0, AutoPBForwardDiff(chunk=2);
+                               θ0=THETA0, closed_form=false)
 
-logp(x::Vector{Float64}) = LogDensityProblems.logdensity(LDF, x)
-
-# Central differences keep the example short; an analytic gradient is faster.
 function logp_grad!(g::Vector{Float64}, x::Vector{Float64})
-    xp = copy(x)
-    for i in eachindex(x)
-        h = 1e-6 * max(1.0, abs(x[i]))
-        xp[i] = x[i] + h; fp = logp(xp)
-        xp[i] = x[i] - h; fm = logp(xp)
-        xp[i] = x[i]
-        g[i] = (fp - fm) / (2h)
-    end
-    return logp(x)
+    lp, grad = LogDensityProblems.logdensity_and_gradient(LDF, x)
+    copyto!(g, grad)
+    return lp
 end
 
 function (@main)(args::Vector{String})::Cint
-    d = length(THETA0)
-    res = static_hmc(logp_grad!, copy(THETA0), ones(d), 0.05, 16, 500, 200; seed=1)
+    res = static_hmc(logp_grad!, copy(THETA0), ones(length(THETA0)), 0.05, 16, 500, 200; seed=1)
     println(Core.stdout, "mean of mu: ", sum(res.draws[1, :]) / size(res.draws, 2))
     return 0
 end
@@ -63,15 +49,25 @@ end
 end
 ```
 
-Seed the RNG passed to `build_layout`: the starting point is drawn from it and
-baked into the binary, so an unseeded RNG gives a different binary on each
-build. Tune `eps`, `L` and `inv_mass` for [`static_hmc`](@ref) beforehand, for
-example with [`static_nuts`](@ref) or [`static_gradient`](@ref) under the JIT.
+Points to keep:
+
+- Define the model with [`@static_model`](@ref), not `@model`.
+- Use [`AutoPBForwardDiff`](@ref) for the gradient, with `closed_form=false`.
+  Without it, a model that looks like a GLM gets the closed-form
+  [`GradMode`](@ref) gradient instead, which does not trim; nor do other AD
+  backends such as ForwardDiff.
+- Sample with [`static_hmc`](@ref). [`sample`](@ref) and AdvancedHMC's samplers
+  do not trim.
+- Seed the RNG for the starting point, so every build starts from the same
+  place.
+- Choose the step size, step count and metric for [`static_hmc`](@ref)
+  beforehand: run the program under Julia, with
+  `MyTrim.main(String[])`, and check `res.n_divergent` and `res.accept_rate`.
 
 ## Build and run
 
-With [JuliaC.jl](https://github.com/JuliaLang/JuliaC.jl) installed in an
-environment `juliac-env`:
+Install [JuliaC.jl](https://github.com/JuliaLang/JuliaC.jl) in an environment
+`juliac-env`, then:
 
 ```
 julia --project=juliac-env -e 'using JuliaC; JuliaC.main(ARGS)' -- \
@@ -79,6 +75,6 @@ julia --project=juliac-env -e 'using JuliaC; JuliaC.main(ARGS)' -- \
 JULIA_LOAD_CODEGEN_LIB=0 ./build/bin/mytrim
 ```
 
-Zero verifier errors does not guarantee the binary works. Run it with
-`JULIA_LOAD_CODEGEN_LIB=0` and compare its output with the same code under
-the JIT.
+A build with no verifier errors can still be wrong. Run the binary with
+`JULIA_LOAD_CODEGEN_LIB=0` and check that its output matches
+`MyTrim.main(String[])` run under Julia.
