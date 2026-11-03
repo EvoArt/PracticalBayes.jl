@@ -4,7 +4,8 @@
 # tutorial code run with `using PracticalBayes` in place of `using Turing`.
 #
 # NB: no testset local may share a name with a model variable — a `@model`
-# defined in a testset is a closure and would assign it (see CLAUDE.md).
+# defined in a testset is a closure over the testset's locals, so its
+# `mu ~ ...` would assign a local named `mu` on every evaluation.
 
 using Distributions: Normal, Exponential, MvNormal
 using StableRNGs: StableRNG
