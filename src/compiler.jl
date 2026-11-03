@@ -54,6 +54,12 @@ looked up from an isbits NamedTuple) does all the work that DynamicPPL does
 at runtime via its `AbstractContext` chain.
 """
 macro model(expr)
+    return _model_expr(expr)
+end
+
+# The expansion behind both `@model` and `@static_model`; they differ only in
+# `static`, the default layout form `build_layout` uses for the model.
+function _model_expr(expr; static::Bool=false)
     # `splitdef` (MacroTools) parses `function name(args...; kwargs...) body end`
     # into a Dict with keys :name, :args, :kwargs, :whereparams, :body, ... —
     # much less fragile than hand-rolling AST pattern matching for every
@@ -175,9 +181,7 @@ macro model(expr)
     #
     # Recognition failing is the normal, expected case and is NOT an error —
     # `gradmode_plan` then returns `nothing` and everything falls back to
-    # general AD. The plan is attached as a METHOD on the generated evaluator
-    # rather than a field on `Model` so that no existing `Model` construction
-    # site changes and the plan stays a compile-time constant.
+    # general AD.
     plan = try
         recognize_glm(def[:body], argnames)
     catch
@@ -186,16 +190,22 @@ macro model(expr)
         # compile".
         nothing
     end
-    plan_fn = :($(PracticalBayes).gradmode_plan(::typeof($(eval_name))) = $(QuoteNode(plan)))
-    # The model's `:=` names, attached the same way as the plan above, so a
-    # chain can ask which recorded values to keep without re-parsing anything.
-    walrus_fn = :($(PracticalBayes).walrus_names(::typeof($(eval_name))) = $(QuoteNode(_walrus_list(def[:body]))))
+    # What PracticalBayes later asks about the model — the closed-form plan
+    # (`gradmode_plan`), the `:=` names (`walrus_names`), the default layout
+    # form (`prefers_static_layout`) — is answered by a one-argument method of
+    # the EVALUATOR itself (`_model_info`, model.jl), not by methods added to
+    # those PracticalBayes functions. `@model` is used inside function bodies
+    # (a model built by a constructor function), and defining a method of
+    # another module's function there is a syntax error; a method of the
+    # evaluator, which is local there too, is not. It also leaves `Model`'s
+    # fields and every construction site as they were.
+    info = (plan=plan, walrus=_walrus_list(def[:body]), static=static)
+    info_fn = :($(eval_name)(::$(PracticalBayes)._ModelInfo) = $(QuoteNode(info)))
 
     return esc(quote
         $(eval_fn)
         $(ctor_fn)
-        $(plan_fn)
-        $(walrus_fn)
+        $(info_fn)
     end)
 end
 
@@ -650,23 +660,10 @@ Both are the same model; only the first pays. Distinct distribution *types*
 cost nothing — it is the record count that matters.
 """
 macro static_model(expr)
-    # The evaluator and constructor are exactly what `@model` builds; the only
-    # difference is the default `static` flag recorded on the Model, which
-    # `build_layout` reads. Delegating rather than duplicating keeps the two
-    # macros from drifting apart.
-    # `@model` is looked up through our module, not the caller's: a caller
-    # using `PB.@static_model` need not have `@model` in scope.
-    inner = macroexpand(__module__, Expr(:macrocall, GlobalRef(PracticalBayes, Symbol("@model")), __source__, expr))
-    def = splitdef(expr)
-    # The trait is attached to the EVALUATOR (`_name_eval`), not the
-    # user-facing constructor: `build_layout` receives a `Model`, whose `f`
-    # field holds the evaluator, so that is the function it can dispatch on.
-    eval_name = Symbol("_", def[:name], "_eval")
-    return esc(quote
-        $(inner)
-        $(PracticalBayes).prefers_static_layout(::typeof($eval_name)) = true
-        $(def[:name])
-    end)
+    # Exactly what `@model` builds, with the static flag set in the model's
+    # info (`_model_info`, model.jl), which `build_layout` reads. One shared
+    # expansion keeps the two macros from drifting apart.
+    return _model_expr(expr; static=true)
 end
 
 """
@@ -676,4 +673,4 @@ Whether a model constructor was defined with [`@static_model`](@ref), and so
 should default to a tuple-valued `Layout.meta`. Ordinary `@model` definitions
 return `false`.
 """
-prefers_static_layout(::Any) = false
+prefers_static_layout(f) = _model_info(f).static

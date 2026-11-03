@@ -126,8 +126,8 @@ end
 end
 
 @testset "general AD path is unchanged by the @model plan emission" begin
-    # the macro now also emits a `gradmode_plan` method; make sure that has not
-    # perturbed the ordinary evaluation path
+    # the macro also records the closed-form plan on the evaluator; make sure
+    # that has not perturbed the ordinary evaluation path
     model = gm_logit(X, yb)
     lay, θ0, store = build_layout(model)
     f0 = LogDensityFunction(model, lay, store, nothing; θ0=θ0)

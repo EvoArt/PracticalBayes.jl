@@ -864,10 +864,10 @@ end
 """
     walrus_names(f) -> Tuple{Vararg{Symbol}}
 
-The names a model assigns with `:=`, in order of first appearance. `@model`
-defines a method for each model's evaluator; anything else has none.
+The names a model assigns with `:=`, in order of first appearance; empty for
+anything that is not a model evaluator.
 """
-walrus_names(::Any) = ()
+walrus_names(f) = _model_info(f).walrus
 
 @inline record_walrus(::AbstractEvalMode, ::Val, x) = x
 

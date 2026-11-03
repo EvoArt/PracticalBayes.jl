@@ -222,3 +222,41 @@ end
     @test PracticalBayes.prefers_static_layout(ms.f)
     @test PracticalBayes.logjoint(ms, (; mu=0.2)) ≈ logpdf(Normal(0, 1), 0.2) + logpdf(Normal(0.2, 1.0), 1.0)
 end
+
+# A model built inside a function, as a package's constructor function does.
+# `@model` used to emit methods of PracticalBayes functions there, which Julia
+# rejects inside a function body ("Global method definition ... needs to be
+# placed at the top level"), so the enclosing function did not even compile.
+import LinearAlgebra
+function _build_models_in_function()
+    @model function in_fn_glm(X, y)
+        pT = paramtype(__mode__); k = size(X, 2)
+        beta ~ Distributions.MvNormal(zeros(pT, k), LinearAlgebra.I)
+        sigma ~ Distributions.Exponential(one(pT))
+        y ~ Distributions.MvNormal(X * beta, sigma^2 * LinearAlgebra.I)
+    end
+    @model function in_fn_walrus(y)
+        mu ~ Normal(0, 1)
+        twice := 2mu
+        y ~ Normal(mu, 1)
+    end
+    @static_model function in_fn_static(y)
+        mu ~ Normal(0, 1)
+        y ~ Normal(mu, 1)
+    end
+    X = [1.0 0.5; 1.0 -0.3; 1.0 0.9]
+    return in_fn_glm(X, [0.2, -0.1, 0.7]), in_fn_walrus(0.4), in_fn_static(0.4)
+end
+
+@testset "compiler.jl: @model inside a function" begin
+    mg, mw, ms = _build_models_in_function()
+    @test PracticalBayes.gradmode_plan(mg.f) !== nothing
+    @test PracticalBayes.walrus_names(mw.f) == (:twice,)
+    @test PracticalBayes.prefers_static_layout(ms.f)
+    @test !PracticalBayes.prefers_static_layout(mw.f)
+    @test PracticalBayes.logjoint(mw, (; mu=0.3)) ≈ logpdf(Normal(0, 1), 0.3) + logpdf(Normal(0.3, 1), 0.4)
+    # anything that is not a model evaluator gets the defaults
+    @test PracticalBayes.gradmode_plan(sin) === nothing
+    @test PracticalBayes.walrus_names(sin) == ()
+    @test !PracticalBayes.prefers_static_layout(sin)
+end
