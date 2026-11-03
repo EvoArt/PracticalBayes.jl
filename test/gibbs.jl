@@ -1,6 +1,6 @@
-# Tests for src/gibbs.jl + src/latent.jl — the three M3 milestone gates
+# Tests for src/gibbs.jl + src/gibbs_kernel.jl — the three M3 milestone gates
 # (see the design plan's "M3 implementation plan" section):
-#   (a) an exact-conditional latent kernel matches the analytically-computed
+#   (a) an exact-conditional Gibbs kernel matches the analytically-computed
 #       joint posterior of a small conjugate model;
 #   (b) a 2-state Gaussian HMM sampled via Gibbs(NUTS, NUTS, FFBS-kernel)
 #       matches NUTS run directly on the same model with the discrete state
@@ -40,8 +40,8 @@ using PracticalBayes: AdaptiveHMC
         y ~ Normal(z, 0.5)
     end
 
-    struct ExactNormalKernel <: AbstractLatentKernel end
-    function PracticalBayes.latent_step(rng, ::ExactNormalKernel, block_names, c::ModelConditional)
+    struct ExactNormalKernel <: AbstractGibbsKernel end
+    function PracticalBayes.gibbs_step(rng, ::ExactNormalKernel, block_names, c::ModelConditional)
         block_names == (:z,) || error("this test kernel only handles the `:z` block")
         y = c.model.args.y
         mu = c.values.mu
@@ -129,8 +129,8 @@ end
         y .~ Normal.(mu, sigma)
     end
 
-    struct FFBS <: AbstractLatentKernel end
-    function PracticalBayes.latent_step(rng, ::FFBS, block_names, c::ModelConditional)
+    struct FFBS <: AbstractGibbsKernel end
+    function PracticalBayes.gibbs_step(rng, ::FFBS, block_names, c::ModelConditional)
         block_names == (:z,) || error("this FFBS kernel only handles the `:z` block")
         y = c.model.args.y
         p_stay, sigma = c.values.p_stay, c.values.sigma
@@ -198,7 +198,9 @@ end
 
     # Chain 2: NUTS directly on the marginalized model.
     m_marginal = hmm_marginal(y)
-    layout2, θ0_2, store0_2 = build_layout(m_marginal)
+    # Seeded: from the global RNG the starting point, and so the check below,
+    # differed run to run.
+    layout2, θ0_2, store0_2 = build_layout(m_marginal; rng=StableRNG(13))
     ldf2 = LogDensityFunction(m_marginal, layout2, store0_2, ADTypes.AutoForwardDiff(); θ0=θ0_2)
     ldm2 = AbstractMCMC.LogDensityModel(ldf2)
     rng2 = StableRNG(12)
@@ -216,8 +218,12 @@ end
     p2 = p_stay_draws2[(n_burn + 1):end]
     s2 = sigma_draws2[(n_burn + 1):end]
 
-    combined_se_p = sqrt(std(p1)^2 / length(p1) + std(p2)^2 / length(p2))
-    combined_se_s = sqrt(std(s1)^2 / length(s1) + std(s2)^2 / length(s2))
+    # MC-SE by batch means (20 batches), not `std/sqrt(N)`: both chains are
+    # autocorrelated, so the naive SE understates the error, and this check
+    # failed at that bound (0.0080 vs 0.0077 at 3x, 2026-11-03).
+    bm_se(x) = (b = length(x) ÷ 20; std([mean(x[(k - 1) * b + 1:k * b]) for k in 1:20]) / sqrt(20))
+    combined_se_p = sqrt(bm_se(p1)^2 + bm_se(p2)^2)
+    combined_se_s = sqrt(bm_se(s1)^2 + bm_se(s2)^2)
     @test abs(mean(p1) - mean(p2)) < 3 * combined_se_p
     @test abs(mean(s1) - mean(s2)) < 3 * combined_se_s
 end
@@ -233,11 +239,11 @@ end
         y ~ Normal(mu + z, 0.5)
     end
 
-    struct DualCheckKernel <: AbstractLatentKernel end
-    function PracticalBayes.latent_step(rng, ::DualCheckKernel, block_names, c::ModelConditional)
+    struct DualCheckKernel <: AbstractGibbsKernel end
+    function PracticalBayes.gibbs_step(rng, ::DualCheckKernel, block_names, c::ModelConditional)
         block_names == (:z,) || error("bad block")
-        @assert eltype([c.values.mu]) <: Union{Float32,Float64} "latent kernel saw a non-plain-float value: $(typeof(c.values.mu))"
-        @assert !(c.values.mu isa ForwardDiff.Dual) "latent kernel saw a Dual!"
+        @assert eltype([c.values.mu]) <: Union{Float32,Float64} "Gibbs kernel saw a non-plain-float value: $(typeof(c.values.mu))"
+        @assert !(c.values.mu isa ForwardDiff.Dual) "Gibbs kernel saw a Dual!"
         return (; z=rand(rng, Normal(c.values.mu, 1.0)))
     end
 
@@ -290,11 +296,11 @@ end
     end
 
     # Kernel: resample every cell as Bernoulli(logistic(mu)). Returns a Matrix{Int}.
-    struct GridKernel <: AbstractLatentKernel
+    struct GridKernel <: AbstractGibbsKernel
         nrows::Int
         ncols::Int
     end
-    function PracticalBayes.latent_step(rng, k::GridKernel, block_names, c::ModelConditional)
+    function PracticalBayes.gibbs_step(rng, k::GridKernel, block_names, c::ModelConditional)
         block_names == (:X,) || error("only :X")
         p = 1 / (1 + exp(-c.values.mu))
         return (; X=Int.(rand(rng, k.nrows, k.ncols) .< p))

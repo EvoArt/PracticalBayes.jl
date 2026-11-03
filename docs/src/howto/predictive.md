@@ -38,7 +38,9 @@ To free observations bound with [`condition`](@ref), use
 
 ## Compute a derived quantity per draw
 
-End the model with `return expr`, for example `return α + β` for the fitted
+A quantity assigned with `:=` in the model, such as `yhat := α .+ β .* x`, is
+stored in the chain and recomputed by `predict` for new data. For anything else,
+end the model with `return expr`, for example `return α + β` for the fitted
 value at `x = 1`. [`returned`](@ref) gives its value at every draw, as a
 draws × chains matrix:
 

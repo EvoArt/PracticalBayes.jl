@@ -33,8 +33,8 @@ chn[:β]
 
 ## Features
 
-- **Latent kernels as plain functions.** A `Gibbs` block can be your own
-  `AbstractLatentKernel`: one `latent_step` method that receives the model's
+- **Gibbs kernels as plain functions.** A `Gibbs` block can be your own
+  `AbstractGibbsKernel`: one `gibbs_step` method that receives the model's
   data and the current value of every parameter, and returns new values for its
   block. It runs once per MCMC step, outside the gradient. It is similar to
   Turing's `GibbsConditional` and `externalsampler`, but designed to be easy to

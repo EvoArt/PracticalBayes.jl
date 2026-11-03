@@ -4,7 +4,7 @@ using AdvancedHMC: DenseEuclideanMetric, DiagEuclideanMetric, UnitEuclideanMetri
     hmc_tuning(spl::Gibbs, state::GibbsState) -> Tuple
 
 The metric and step size each HMC block of `spl` has reached in `state`, one
-entry per block: `nothing` for a latent block, otherwise
+entry per block: `nothing` for a kernel block, otherwise
 `(names, metric, step_size)`. `metric` is the inverse mass matrix as a plain
 array (a `Matrix` for a dense metric, a `Vector` for a diagonal one, `nothing`
 for the unit metric).
@@ -66,8 +66,8 @@ function warm_start(spl::Gibbs, tuning; adapt::Symbol=:step_size)
     blocks = ntuple(length(spl.blocks)) do i
         b, tu = spl.blocks[i], tuning[i]
         tu === nothing && return b
-        _is_latent_block(b) && throw(ArgumentError(
-            "tuning has an entry for block $i, which is a latent block"))
+        _is_kernel_block(b) && throw(ArgumentError(
+            "tuning has an entry for block $i, which is a kernel block"))
         Tuple(tu.names) == b.names || throw(ArgumentError(
             "tuning for block $i is for ($(join(tu.names, ", "))), " *
             "but the block holds ($(join(b.names, ", ")))"))

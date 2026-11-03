@@ -156,8 +156,8 @@ end
         z ~ Normal(mu, 1)
         y ~ Normal(z, 0.5)
     end
-    struct ExactZ <: AbstractLatentKernel end
-    function PracticalBayes.latent_step(rng, ::ExactZ, block_names, c::ModelConditional)
+    struct ExactZ <: AbstractGibbsKernel end
+    function PracticalBayes.gibbs_step(rng, ::ExactZ, block_names, c::ModelConditional)
         y = c.model.args.y
         mu = c.values.mu
         post_prec = 1.0 + 1 / 0.5^2

@@ -54,8 +54,8 @@ setprogress!
 
 ```@docs
 Gibbs
-AbstractLatentKernel
-latent_step
+AbstractGibbsKernel
+gibbs_step
 ModelConditional
 ConjugateGibbs
 PG

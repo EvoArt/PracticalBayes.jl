@@ -111,7 +111,7 @@ function check_depends(
     ok = true
 
     for (i, block) in enumerate(spl.blocks)
-        _is_latent_block(block) && continue          # no gradient to compare
+        _is_kernel_block(block) && continue          # no gradient to compare
 
         own = block.names
         other = Tuple(k for k in all_names if !(k in own))

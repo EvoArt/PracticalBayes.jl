@@ -1,15 +1,15 @@
-# A generic conjugate-Gibbs latent kernel.
+# A generic conjugate Gibbs kernel.
 #
 # Many Gibbs blocks have a closed-form full conditional in a conjugate family:
 # given the rest of the state, the block's posterior is a Beta / Dirichlet / etc.
 # whose parameters are the prior plus some sufficient statistics ("counts") read
 # off the current draw of everything else. Writing such a kernel by hand is always
-# the same shape — a struct, a `latent_step` method, a loop that accumulates the
+# the same shape — a struct, a `gibbs_step` method, a loop that accumulates the
 # counts, and a draw — so this file provides the generic engine, leaving the user
 # only the part that is actually model-specific: how to compute the counts.
 #
-# This is the conjugate sibling of the hand-written `FFBS` example in latent.jl:
-# both are `AbstractLatentKernel`s that `Gibbs` calls once per sweep, outside every
+# This is the conjugate sibling of the hand-written `FFBS` example in gibbs_kernel.jl:
+# both are `AbstractGibbsKernel`s that `Gibbs` calls once per sweep, outside every
 # gradient step, so they may use plain non-differentiated arithmetic throughout.
 #
 # It knows nothing about any particular model. The `count` closure receives the
@@ -23,7 +23,7 @@ using Distributions: Beta, Dirichlet
 """
     ConjugateGibbs(name, family, prior, count; n=nothing, collect=identity)
 
-A latent kernel that draws the block `name` from a conjugate Beta or Dirichlet
+A Gibbs kernel that draws the block `name` from a conjugate Beta or Dirichlet
 full conditional: the `prior` hyperparameters plus counts returned by `count`.
 
 # Arguments
@@ -47,7 +47,7 @@ end
 spl = Gibbs(:p => pk, :μ => NUTS(0.8), :z => AllocationKernel())
 ```
 """
-struct ConjugateGibbs{C,P,L} <: AbstractLatentKernel
+struct ConjugateGibbs{C,P,L} <: AbstractGibbsKernel
     name::Symbol
     family::Symbol
     prior::P
@@ -78,7 +78,7 @@ _conjugate_draw(rng, ::Val{:beta}, prior, counts) =
 _conjugate_draw(rng, ::Val{:dirichlet}, prior, counts) =
     rand(rng, Dirichlet(prior .+ counts))
 
-function latent_step(rng, k::ConjugateGibbs, block_names, c::ModelConditional)
+function gibbs_step(rng, k::ConjugateGibbs, block_names, c::ModelConditional)
     block_names == (k.name,) ||
         error("ConjugateGibbs owns block $(k.name), got $(block_names)")
     fam = Val(k.family)

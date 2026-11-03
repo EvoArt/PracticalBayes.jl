@@ -40,7 +40,7 @@ include("gradmode_codegen.jl")
 include("forwarddiff.jl")
 include("logdensity.jl")
 include("optimize.jl")
-include("latent.jl")
+include("gibbs_kernel.jl")
 include("conjugate.jl")
 include("particle_gibbs.jl")
 include("save_states.jl")
@@ -69,7 +69,7 @@ export AbstractEvalMode, TraceMode, EvalMode, PriorMode, FixedMode, PointwiseMod
 export evaluate, paramtype
 export maximum_a_posteriori, maximum_likelihood, laplace_approximation
 export PointEstimate, LaplaceApproximation, laplace_mvnormal
-export AbstractLatentKernel, ModelConditional, latent_step
+export AbstractGibbsKernel, ModelConditional, gibbs_step
 export ConjugateGibbs, PG, ParticleMode
 export Gibbs, GibbsState, hmc_tuning, warm_start
 export check_depends, DependsReport

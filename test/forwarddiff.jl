@@ -75,6 +75,16 @@ end
     end
 end
 
+@testset "forwarddiff.jl: a GLM-shaped model keeps AutoPBForwardDiff" begin
+    # `_fd_test_model` is a GLM, so LogDensityFunction would normally swap in
+    # the closed-form gradient. It must not for this backend: the closed form
+    # does not trim, and trimming is the only reason to ask for it.
+    m, layout, θ0, store0 = _fd_setup()
+    @test PracticalBayes.gradmode_plan(m.f) !== nothing        # it IS recognised
+    @test LogDensityFunction(m, layout, store0, AutoForwardDiff(); θ0=θ0).adtype isa GradMode
+    @test LogDensityFunction(m, layout, store0, AutoPBForwardDiff(); θ0=θ0).adtype isa AutoPBForwardDiff
+end
+
 @testset "forwarddiff.jl: reports gradient capability to samplers" begin
     m, layout, θ0, store0 = _fd_setup()
     ldf = LogDensityFunction(m, layout, store0, AutoPBForwardDiff(); θ0=θ0)

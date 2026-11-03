@@ -1,6 +1,6 @@
 # Explanation
 
-## Latent kernels in a Gibbs sampler
+## Gibbs kernels in a Gibbs sampler
 
 HMC moves continuous parameters using the gradient of the log density, and each
 iteration evaluates that gradient many times. A discrete or very large latent
@@ -10,7 +10,7 @@ differentiating through it would be expensive even if it did.
 A [`Gibbs`](@ref) sampler therefore splits the work. Each sweep updates the
 blocks in turn. An HMC block sees every other block as fixed data: those values
 sit in a store passed to the AD backend as constants, so they are never
-differentiated, and an HMC step never calls a latent kernel. A latent kernel
+differentiated, and an HMC step never calls a Gibbs kernel. A Gibbs kernel
 runs once per sweep with plain numbers, so it can use any algorithm: exact
 conditional draws, forward filtering and backward sampling, or Metropolis
 proposals scored with [`logjoint`](@ref).
@@ -41,7 +41,9 @@ end
 
 With `=` instead, `z ~ dist` would declare `z` a parameter, and `z` would not
 appear in the chain. `:=` is also the way to keep a derived quantity, such as
-a transformed parameter, with each draw.
+a transformed parameter, with each draw. `rand` and [`predict`](@ref) return
+`:=` values too, recomputed from each draw, so `yhat := X * beta` follows new
+data passed to `predict`.
 
 ## Skipping terms in Gibbs blocks: `depends=`
 
@@ -99,8 +101,9 @@ fixed layout.
 - **The closed form.** When `@model` sees that a model is a generalised linear
   model, with a linear predictor that is visibly linear in the parameters, it
   records the model's structure. The gradient is then computed directly,
-  essentially `X' * residual`, without AD. This happens automatically; the
-  recognition is purely syntactic and conservative, so a model it does not
+  essentially `X' * residual`, without AD. This happens automatically, except with
+  `AutoPBForwardDiff`, which is kept for trimming; the recognition is purely
+  syntactic and conservative, so a model it does not
   recognise uses AD. See [`GradMode`](@ref) and [`check_gradmode`](@ref).
 - **Piste forward mode.** [`AutoPBForwardDiff`](@ref) computes derivatives with
   dual numbers whose sizes are fixed at compile time and needs nothing built at

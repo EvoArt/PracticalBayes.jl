@@ -192,7 +192,7 @@ function build_layout(
             throw(ArgumentError(
                 "site `$(r.name)` has a discrete/latent distribution and is neither " *
                 "assigned to a value-block (`values=(:$(r.name),...)`) nor conditioned. " *
-                "Assign it to a latent kernel via Gibbs, or condition it.",
+                "Give it a Gibbs kernel (e.g. `PG`) in `Gibbs`, or condition it.",
             ))
         end
     end

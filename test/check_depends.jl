@@ -140,9 +140,9 @@ const Y = randn(StableRNG(1), 20)
                             verbose=false).ok
     end
 
-    @testset "a latent block is skipped, not checked" begin
-        struct _NoopKernel <: PracticalBayes.AbstractLatentKernel end
-        PracticalBayes.latent_step(rng, ::_NoopKernel, names, c) = (; z=c.values.z)
+    @testset "a kernel block is skipped, not checked" begin
+        struct _NoopKernel <: PracticalBayes.AbstractGibbsKernel end
+        PracticalBayes.gibbs_step(rng, ::_NoopKernel, names, c) = (; z=c.values.z)
 
         @model function m_lat(y, fa)
             a ~ Normal(0, 1)

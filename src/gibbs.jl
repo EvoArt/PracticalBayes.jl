@@ -19,8 +19,8 @@ _normalize_block_names(t::Tuple{Vararg{Symbol}}) = t
 One block of a `Gibbs` sampler: `names` (a `Symbol` or `Tuple` of `Symbol`s)
 identifies which model variables this block owns; `kernel` is either an
 AbstractMCMC sampler over the block's unconstrained parameters (e.g.
-`NUTS(0.8)`, or AdvancedMH's `RWMH`) or an `AbstractLatentKernel` (see
-latent.jl), such as [`PG`](@ref) or a hand-written FFBS kernel.
+`NUTS(0.8)`, or AdvancedMH's `RWMH`) or an `AbstractGibbsKernel` (see
+gibbs_kernel.jl), such as [`PG`](@ref) or a hand-written FFBS kernel.
 """
 struct GibbsBlock{K,N<:Tuple{Vararg{Symbol}}}
     names::N
@@ -39,11 +39,11 @@ block:
   [`NUTSthenHMC`](@ref)) or another AbstractMCMC sampler that works on a log
   density, which takes one step on the block's continuous parameters with every
   other variable held fixed;
-- a latent kernel ([`PG`](@ref), [`ConjugateGibbs`](@ref) or your own
-  [`AbstractLatentKernel`](@ref)), which draws the block's new values directly.
+- a Gibbs kernel ([`PG`](@ref), [`ConjugateGibbs`](@ref) or your own
+  [`AbstractGibbsKernel`](@ref)), which draws the block's new values directly.
 
 Every parameter of the model must be in exactly one block, and discrete
-parameters need a latent kernel. Run it with [`sample`](@ref); pass `n_adapts`
+parameters need a Gibbs kernel. Run it with [`sample`](@ref); pass `n_adapts`
 there and keep it the same for the whole run.
 
 ```julia
@@ -62,7 +62,7 @@ function Gibbs(pairs::Pair...)
     return Gibbs(blocks)
 end
 
-_is_latent_block(b::GibbsBlock) = b.kernel isa AbstractLatentKernel
+_is_kernel_block(b::GibbsBlock) = b.kernel isa AbstractGibbsKernel
 
 # ===========================================================================
 # Per-block persistent state, carried inside GibbsState across sweeps.
@@ -83,12 +83,12 @@ struct GibbsSamplerSub{L<:Layout,AD,P,S}
     hmc_state::S  # `nothing` before this block's first step, then an AdvancedHMC.HMCState
 end
 
-# Latent block: no persistent Layout/prep at all — `latent_step` (latent.jl)
+# Kernel block: no persistent Layout/prep at all — `gibbs_step` (gibbs_kernel.jl)
 # reads/writes plain NamedTuple values directly, never builds a
 # LogDensityFunction, never touches AD. Any state a kernel itself needs
 # (e.g. an adaptive proposal) lives inside the user's own `kernel` struct,
 # which Gibbs treats as opaque and never mutates.
-struct GibbsLatentSub end
+struct GibbsKernelSub end
 
 """
     GibbsState(values, subs)
@@ -132,10 +132,10 @@ function _validate_gibbs_coverage(model::Model, spl::Gibbs, rng=Random.default_r
 
     role_by_name = Dict(r.name => r.role for r in assumed)
     for (i, b) in enumerate(spl.blocks), n in b.names
-        if !_is_latent_block(b) && get(role_by_name, n, :param) == :latent
+        if !_is_kernel_block(b) && get(role_by_name, n, :param) == :latent
             throw(ArgumentError(
                 "block $i assigns discrete/latent variable `$n` to $(typeof(b.kernel)), a sampler over " *
-                "unconstrained continuous parameters — discrete variables need an `AbstractLatentKernel` " *
+                "unconstrained continuous parameters — discrete variables need an `AbstractGibbsKernel` " *
                 "instead (e.g. `PG(n)`, or a hand-written FFBS/conjugate-Gibbs kernel), since there's no " *
                 "continuous unconstrained encoding for them.",
             ))
@@ -180,7 +180,7 @@ function _gibbs_init_values(records, init::NamedTuple)
             # strictly checks that every later sweep's `store` has the
             # exact same types `prep` was built against — a `Vector{Any}`
             # here vs. a concretely-typed `Vector{Int64}` from a real
-            # `latent_step` call is a type mismatch that DI rejects at sweep
+            # `gibbs_step` call is a type mismatch that DI rejects at sweep
             # time with a `PreparationMismatchError`.
             by_name[r.name] = [r.init_val]
         else
@@ -197,8 +197,8 @@ function _gibbs_init_values(records, init::NamedTuple)
 end
 
 function _init_block_sub(model::Model, block::GibbsBlock, values0::NamedTuple; adtype=AutoForwardDiff())
-    if _is_latent_block(block)
-        return GibbsLatentSub()
+    if _is_kernel_block(block)
+        return GibbsKernelSub()
     end
     # A block whose sampler carries its own backend (`NUTS(; adtype=...)`) uses it.
     adtype = _block_adtype(block.kernel, adtype)
@@ -249,14 +249,14 @@ function AbstractMCMC.step(rng::Random.AbstractRNG, model::Model, spl::Gibbs, st
     for i in eachindex(spl.blocks)
         block = spl.blocks[i]
         sub = state.subs[i]
-        if _is_latent_block(block)
+        if _is_kernel_block(block)
             c = ModelConditional(model, values)
-            newvals = latent_step(rng, block.kernel, block.names, c)
+            newvals = gibbs_step(rng, block.kernel, block.names, c)
             keys(newvals) == block.names || throw(ArgumentError(
-                "latent_step for block $(block.names) must return a NamedTuple with exactly those keys, got $(keys(newvals))",
+                "gibbs_step for block $(block.names) must return a NamedTuple with exactly those keys, got $(keys(newvals))",
             ))
             values = merge(values, newvals)
-            new_subs[i] = GibbsLatentSub()
+            new_subs[i] = GibbsKernelSub()
         else
             other_names = Tuple(k for k in keys(values) if !(k in block.names))
             store = NamedTuple{other_names}(Tuple(values[k] for k in other_names))

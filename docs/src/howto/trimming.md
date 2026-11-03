@@ -31,8 +31,7 @@ end
 # is built once, when the package is precompiled.
 const M = simple(2.0)
 const LAYOUT, THETA0, STORE0 = build_layout(M; rng=Xoshiro(1234))
-const LDF = LogDensityFunction(M, LAYOUT, STORE0, AutoPBForwardDiff(chunk=2);
-                               θ0=THETA0, closed_form=false)
+const LDF = LogDensityFunction(M, LAYOUT, STORE0, AutoPBForwardDiff(chunk=2); θ0=THETA0)
 
 function logp_grad!(g::Vector{Float64}, x::Vector{Float64})
     lp, grad = LogDensityProblems.logdensity_and_gradient(LDF, x)
@@ -52,10 +51,8 @@ end
 Points to keep:
 
 - Define the model with [`@static_model`](@ref), not `@model`.
-- Use [`AutoPBForwardDiff`](@ref) for the gradient, with `closed_form=false`.
-  Without it, a model that looks like a GLM gets the closed-form
-  [`GradMode`](@ref) gradient instead, which does not trim; nor do other AD
-  backends such as ForwardDiff.
+- Use [`AutoPBForwardDiff`](@ref) for the gradient. Other AD backends, such as
+  ForwardDiff, and the closed-form [`GradMode`](@ref) gradient do not trim.
 - Sample with [`static_hmc`](@ref). [`sample`](@ref) and AdvancedHMC's samplers
   do not trim.
 - Seed the RNG for the starting point, so every build starts from the same

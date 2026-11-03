@@ -2,8 +2,9 @@
 
 A [`Gibbs`](@ref) sampler splits a model's parameters into blocks and updates
 each block in turn, holding the others fixed. A block is updated by an HMC
-sampler or by a latent kernel: a sampler you write that draws the block's new
-values directly. Discrete parameters need a latent kernel.
+sampler or by a Gibbs kernel, which draws the block's new values directly: a
+built-in one such as [`ConjugateGibbs`](@ref) or [`PG`](@ref), or one you
+write. Discrete parameters need a Gibbs kernel.
 
 The example is a two-component mixture: each observation comes from
 `Normal(μ, 1)` with probability `p` or from `Normal(0, 1)` otherwise, and the
@@ -26,18 +27,18 @@ end
 nothing # hide
 ```
 
-## Write a latent kernel
+## Write a Gibbs kernel
 
-Subtype [`AbstractLatentKernel`](@ref) and add a method to
-[`latent_step`](@ref). `c.values` holds the current value of every parameter,
-and `c.model.args` the model's arguments. Return a `NamedTuple` with the
+Subtype [`AbstractGibbsKernel`](@ref) and add a method to
+[`gibbs_step`](@ref). `cond.values` holds the current value of every parameter,
+and `cond.model.args` the model's arguments. Return a `NamedTuple` with the
 block's new values.
 
 ```@example gibbs
-struct AllocationKernel <: AbstractLatentKernel end
+struct AllocationKernel <: AbstractGibbsKernel end
 
-function PracticalBayes.latent_step(rng, ::AllocationKernel, block_names, c::ModelConditional)
-    y, p, μ = c.model.args.y, c.values.p, c.values.μ
+function PracticalBayes.gibbs_step(rng, ::AllocationKernel, names, cond::ModelConditional)
+    y, p, μ = cond.model.args.y, cond.values.p, cond.values.μ
     z = map(y) do yi
         l1 = log(p) + logpdf(Normal(μ, 1), yi)
         l0 = log1p(-p) + logpdf(Normal(0, 1), yi)
@@ -138,5 +139,5 @@ has one entry per observation.
 ## A larger example
 
 [EpidemicTrajectories.jl](https://evoart.github.io/EpidemicTrajectories/dev/tutorials/cattle_iffbs/)
-uses latent kernels to sample the hidden infection states of an epidemic model
+uses Gibbs kernels to sample the hidden infection states of an epidemic model
 with forward filtering and backward sampling.

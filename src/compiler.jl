@@ -25,7 +25,7 @@ Statements in the body:
 - `return expr`: the value [`returned`](@ref) gives back.
 
 Discrete parameters (`Categorical`, `Bernoulli`, ...) cannot be sampled by HMC;
-give them a latent kernel in [`Gibbs`](@ref).
+give them a Gibbs kernel in [`Gibbs`](@ref).
 
 ```julia
 @model function linreg(x, y)
@@ -173,11 +173,15 @@ macro model(expr)
         nothing
     end
     plan_fn = :($(PracticalBayes).gradmode_plan(::typeof($(eval_name))) = $(QuoteNode(plan)))
+    # The model's `:=` names, attached the same way as the plan above, so a
+    # chain can ask which recorded values to keep without re-parsing anything.
+    walrus_fn = :($(PracticalBayes).walrus_names(::typeof($(eval_name))) = $(QuoteNode(_walrus_list(def[:body]))))
 
     return esc(quote
         $(eval_fn)
         $(ctor_fn)
         $(plan_fn)
+        $(walrus_fn)
     end)
 end
 
@@ -277,14 +281,36 @@ end
 # `_walrus_names` has already recorded `z` into `argnames`, so all `:=` needs
 # to do at THIS point is stop being special syntax and become a normal
 # variable assignment that the rest of the function body can use.
+#
+# A plain-name `z := expr` also goes through `record_walrus` (tilde.jl), which
+# returns `expr` unchanged and, in the two modes that collect values
+# (`PriorMode` for `rand`, `FixedMode` for `predict` and the per-draw chain
+# evaluation), records it under `z` — this is how `:=` values reach chains, as
+# in Turing. On the sampling/gradient path (`EvalMode`) it is the identity and
+# compiles away. An indexed LHS (`x[i] := expr`) is a plain assignment, not
+# recorded.
 function _rewrite_walrus(body)
     return postwalk(body) do x
         if x isa Expr && x.head == :(:=)
-            :($(x.args[1]) = $(x.args[2]))
+            lhs, rhs = x.args
+            lhs isa Symbol || return :($(lhs) = $(rhs))
+            :($(lhs) = $(PracticalBayes).record_walrus(__mode__, $(Val)($(QuoteNode(lhs))), $(rhs)))
         else
             x
         end
     end
+end
+
+# The `:=` names in order of first appearance — what a chain records per draw.
+function _walrus_list(body)
+    names = Symbol[]
+    MacroTools.postwalk(body) do x
+        if x isa Expr && x.head == :(:=) && x.args[1] isa Symbol && !(x.args[1] in names)
+            push!(names, x.args[1])
+        end
+        x
+    end
+    return Tuple(names)
 end
 
 """

@@ -22,7 +22,8 @@ are held constant.
 - `reject_errors`: treat an error inside the model as density `-Inf` instead of
   throwing.
 - `closed_form`: use the closed-form gradient when the model is recognised (see
-  [`is_gradmode_compatible`](@ref)). Set `false` to force `adtype`.
+  [`is_gradmode_compatible`](@ref)). Set `false` to force `adtype`. Ignored for
+  [`AutoPBForwardDiff`](@ref), which always uses Piste.
 
 Computation follows the element type of `θ`.
 
@@ -94,7 +95,13 @@ function LogDensityFunction(
     #
     # Opt out with `closed_form=false` when you want the AD path specifically
     # (e.g. checking the closed form against it, which `check_gradmode` does).
-    if closed_form && !(adtype isa GradMode)
+    #
+    # Never for `AutoPBForwardDiff`: that backend exists only so a model can be
+    # compiled with `juliac --trim`, and the closed-form path does not survive
+    # the trimmer. Substituting it would quietly defeat the one thing the user
+    # asked for by naming that backend (seen: the trimming guide had to pass
+    # `closed_form=false` to get a GLM-shaped model to trim).
+    if closed_form && !(adtype isa GradMode) && !(adtype isa AutoPBForwardDiff)
         gm = _maybe_gradmode(model, store, θ0)
         if !isempty(gm)
             return LogDensityFunction(model, layout, store, GradMode(), gm[1], reject_errors)

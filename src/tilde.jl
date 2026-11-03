@@ -850,3 +850,33 @@ function tilde_dot(p::PointwiseMode, ::Val{s}, y, dist_bcast, acc::Accum) where 
     p.pointwise[] = merge(p.pointwise[], NamedTuple{(s,)}((vec(lps),)))
     return acc_lik(acc, sum(lps))
 end
+
+# ===========================================================================
+# `z := expr` — deterministic quantities. The compiler turns every plain-name
+# `:=` into `z = record_walrus(__mode__, Val(:z), expr)` (compiler.jl,
+# `_rewrite_walrus`). Everywhere but the two value-collecting modes this is
+# the identity, so the sampling and gradient paths are unchanged; `PriorMode`
+# (`rand`) and `FixedMode` (`predict`, and the per-draw evaluation that puts
+# `logjoint` and these values into a chain) record the value under its name,
+# which is how `:=` quantities reach a chain, as in Turing.
+# ===========================================================================
+
+"""
+    walrus_names(f) -> Tuple{Vararg{Symbol}}
+
+The names a model assigns with `:=`, in order of first appearance. `@model`
+defines a method for each model's evaluator; anything else has none.
+"""
+walrus_names(::Any) = ()
+
+@inline record_walrus(::AbstractEvalMode, ::Val, x) = x
+
+function record_walrus(p::PriorMode, ::Val{s}, x) where {s}
+    p.values[] = merge(p.values[], NamedTuple{(s,)}((x,)))
+    return x
+end
+
+function record_walrus(f::FixedMode, ::Val{s}, x) where {s}
+    f.values[] = merge(f.values[], NamedTuple{(s,)}((x,)))
+    return x
+end
