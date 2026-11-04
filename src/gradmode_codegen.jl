@@ -723,16 +723,15 @@ end
 @inline _gm_logistic(x) = inv(one(x) + exp(-x))
 
 # sum(log(y_i!)) for integer counts. Constant w.r.t. theta (it only shifts the
-# value, never the gradient), so this runs once per call outside the hot loop
-# and its cost is irrelevant. Computed by direct summation rather than
-# `loggamma` specifically to avoid taking a SpecialFunctions dependency for a
-# term that never touches the gradient — counts in practice are small, and the
-# loop is O(sum(y)) only for the largest count seen.
+# value, never the gradient), but it is still recomputed on every call, so its
+# cost is not irrelevant. It used to sum log(j) for j = 2..y_i, making a call
+# O(sum(y)): with counts in the millions (a Poisson GLM with a large linear
+# predictor) GradMode came out 80-180x SLOWER than general AD. `_dl_logfactorial`
+# (tilde.jl) keeps the cost per element constant.
 function _gm_logfactorial_sum(y)
     s = 0.0
     @inbounds for v in y
-        k = Int(v)
-        for j in 2:k; s += log(j); end
+        s += _dl_logfactorial(Float64, Int(v))
     end
     return s
 end

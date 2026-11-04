@@ -151,10 +151,17 @@ end
     return s * loglam - length(y) * lambda - lf
 end
 
-# log(k!) by direct summation. Kept branch-simple and un-memoized: counts in
-# practice are small, and a shared cache would need locking under threaded
-# sampling (`MCMCThreads`), which is a worse trade than recomputing.
+# log(k!). Small counts are summed directly, which is exact and cheaper than a
+# log-gamma call; from 16 up it goes through `Distributions.logfactorial`
+# (log-gamma), whose cost does not grow with k. Summing for every k made each
+# call O(k), and a Poisson GLM with a large linear predictor has counts in the
+# millions: the benchmark sweep's Poisson model at 200 coefficients spent
+# milliseconds per log density in this loop alone.
+#
+# Un-memoized on purpose: a shared cache would need locking under threaded
+# sampling (`MCMCThreads`), a worse trade than recomputing.
 @inline function _dl_logfactorial(::Type{T}, k::Int) where {T}
+    k < 16 || return T(Distributions.logfactorial(k))
     acc = zero(T)
     @inbounds for j in 2:k
         acc += log(T(j))

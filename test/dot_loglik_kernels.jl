@@ -34,6 +34,30 @@ _dl_allocs(f, args...) = (f(args...); @allocated f(args...))
         end
     end
 
+    @testset "large Poisson counts: correct, and cost independent of the count" begin
+        # log(k!) was a sum over 2..k, so a log density cost O(sum(y)). A
+        # Poisson GLM with a large linear predictor has counts in the millions.
+        lf = PracticalBayes._dl_logfactorial
+        for k in (0, 1, 2, 15, 16, 17, 40, 10^6)
+            @test lf(Float64, k) ≈ Distributions.logfactorial(k) rtol=1e-12
+        end
+        @test lf(Float32, 10^6) isa Float32
+        y_big = Float64.(rand(rng, Distributions.Poisson(2.0e6), 200))
+        d_big = Distributions.Poisson(2.0e6)
+        # Looser than the rtol=1e-10 above: the kernel forms sum(y)*log(lambda)
+        # and sum(log y!) separately, each ~6e9 here, and subtracts them to get
+        # ~-1750, so ~1e-7 of absolute rounding is expected and harmless.
+        @test dl(d_big, y_big) ≈ Distributions.loglikelihood(d_big, y_big) rtol=1e-8
+        # GradMode's normaliser goes through the same helper.
+        @test PracticalBayes._gm_logfactorial_sum(y_big) ≈
+              sum(Distributions.logfactorial.(Int.(y_big))) rtol=1e-12
+        # A count of 10^6 must cost about what a count of 20 does, not 10^5x.
+        dl(d_big, y_big); dl(Distributions.Poisson(20.0), fill(20.0, 200))
+        t_big = minimum(@elapsed(dl(d_big, y_big)) for _ in 1:20)
+        t_small = minimum(@elapsed(dl(Distributions.Poisson(20.0), fill(20.0, 200))) for _ in 1:20)
+        @test t_big < 50 * t_small + 1e-5
+    end
+
     @testset "out-of-support data gives -Inf, not a wrong finite value" begin
         # The whole risk of a hand-written kernel is that it happily computes
         # a plausible number for data the distribution gives zero density to.
