@@ -18,6 +18,8 @@ const SWEEP_PATH = joinpath(@__DIR__, "results", "sweep.json")
 const MARKER_START = "<!-- BENCH:START -->"
 const MARKER_END = "<!-- BENCH:END -->"
 
+const BACKEND_TITLES = Dict("forwarddiff" => "ForwardDiff", "mooncake" => "Mooncake", "enzyme" => "Enzyme")
+
 function ratio(pb_ns, tu_ns)
     if !isfinite(pb_ns) || !isfinite(tu_ns) || tu_ns <= 0
         return "n/a"
@@ -86,7 +88,7 @@ function make_backend_table(lookup, backend::String, nvals::Vector{Int}, kvals::
     k_small, k_large = first(kvals), last(kvals)
 
     lines = String[]
-    push!(lines, "### $(uppercasefirst(backend))")
+    push!(lines, "### $(get(BACKEND_TITLES, backend, backend))")
     push!(lines, "")
     push!(lines, "| Likelihood | Precision | small N / small P | small N / large P | large N / small P | large N / large P |")
     push!(lines, "|---|---:|---:|---:|---:|---:|")
@@ -124,6 +126,26 @@ function update_readme_table(new_block::String)
     write(README_PATH, updated)
 end
 
+# One line saying what the numbers were measured on: Julia, the machine, the
+# packages whose versions move these ratios, and how each timing was taken.
+# Results written before sweep.jl recorded its environment have no
+# "environment" entry; they get no line rather than an error.
+function environment_line(meta)
+    haskey(meta, :environment) || return ""
+    env = meta["environment"]
+    pk = env["packages"]
+    order = ("PracticalBayes", "Turing", "DynamicPPL", "ForwardDiff", "Mooncake",
+             "Enzyme", "Piste", "AdvancedHMC", "Distributions", "BenchmarkTools")
+    pkgs = join(["$(p) $(pk[Symbol(p)])" for p in order if haskey(pk, Symbol(p))], ", ")
+    blas = haskey(env, :blas_threads) ? env["blas_threads"] : nothing
+    threads = blas === nothing ? "one thread" :
+              "one Julia thread and $(blas) BLAS thread$(blas == 1 ? "" : "s")"
+    return "\nMeasured with Julia $(env["julia"]) on $(threads) of an exclusive " *
+           "$(env["cpu"]) node: $(pkgs). Each figure is the median of up to " *
+           "$(meta["bench_samples"]) samples or $(meta["bench_seconds"]) s, with the " *
+           "evaluations per sample tuned by BenchmarkTools.\n"
+end
+
 function main()
     payload = JSON3.read(read(SWEEP_PATH, String))
     meta = payload["meta"]
@@ -137,7 +159,10 @@ function main()
     lookup = build_lookup(rows)
 
     legend = "Ratios are median gradient time `PracticalBayes / Turing` (`< 1` means PracticalBayes faster)." *
-             " Corner cells come from the 5x5 sweep grid: N in $(nvals), NPARAMS in $(kvals).\n"
+             " Corner cells come from the 5x5 sweep grid: N in $(nvals), NPARAMS in $(kvals)." *
+             " Turing evaluates in `Float64` whatever the input type, so the `Float32` rows" *
+             " compare PracticalBayes in `Float32` against Turing in `Float64`.\n" *
+             environment_line(meta)
 
     block = join([
         legend,
@@ -155,16 +180,20 @@ function main()
         "with `< 1` meaning Piste is faster.
 
 " *
-        "Read the tables together. **Forward mode** wins at small problems (the other " *
-        "backends' per-call setup dominates a tiny gradient) and loses badly at large P, " *
-        "because its cost is O(P) by construction -- the large bottom-right figures are " *
-        "that, not a defect. **Reverse mode** is the one to use on parameter-heavy models; " *
-        "it costs one sweep regardless of P.
+        "Read the tables together. **Forward mode** costs O(P) by construction: with few " *
+        "parameters it is level with the fastest backend, and with many it falls far " *
+        "behind, which is what the large-P columns show. **Reverse mode** does not grow " *
+        "with P the same way. In `Float64` it is close to the fastest backend on the " *
+        "Poisson and Bernoulli models and ahead of it at large P, but several times " *
+        "slower on the normal model; in `Float32` it is slower throughout.
 
 " *
         "**GradMode** is not AD at all: for a GLM-shaped model PracticalBayes recognises " *
         "the shape and evaluates the analytic gradient directly (`X' * resid`, one BLAS " *
-        "call, no tape), which is why it beats every backend here. All three sweep models " *
+        "call, no tape). On the Poisson and Bernoulli models it is the fastest option " *
+        "almost everywhere. On the normal model it is level with the AD backends from " *
+        "about a thousand observations up, and slower below that, where a gradient takes " *
+        "microseconds and GradMode's fixed cost per call dominates. All three sweep models " *
         "are GLM-shaped, so it applies to every cell; a model outside the recognised " *
         "grammar falls back to ordinary AD and gets none of this.
 
@@ -180,12 +209,6 @@ function main()
         make_piste_table(lookup, "piste_rev", nvals, kvals, likelihoods, precisions),
         "
 #### GradMode (analytic, GLM-shaped models only)
-
-" *
-        "Note: these figures predate a 3.8x speedup to GradMode's fixed per-call cost " *
-        "(`_gm_positive_support` was calling `minimum`/`maximum` on an `MvNormal` prior on " *
-        "every gradient, ~10us and allocating). Regenerate the sweep to pick it up; the " *
-        "small-N columns here are the ones most understated.
 
 " *
         make_piste_table(lookup, "gradmode", nvals, kvals, likelihoods, precisions),

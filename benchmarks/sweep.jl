@@ -70,8 +70,13 @@ const LIKELIHOODS = (:normal, :poisson, :bernoulli_logit)
 const PRECISIONS = (Float64, Float32)
 const NS = (50, 200, 1_000, 5_000, 20_000)
 const KS = (2, 10, 50, 100, 200)
-const BENCH_SAMPLES = 20
-const BENCH_EVALS = 1
+# Each timing is a BenchmarkTools median over up to BENCH_SAMPLES samples or
+# BENCH_SECONDS seconds, whichever runs out first. The evaluations per sample
+# are left to BenchmarkTools to tune. They used to be fixed at one, which is
+# fine for a gradient taking milliseconds but leaves a microsecond gradient
+# (small N, small P) dominated by timer overhead and noise.
+const BENCH_SAMPLES = 200
+const BENCH_SECONDS = 3.0
 
 PracticalBayes.@model function pb_regression_normal(X, y)
     pT = PracticalBayes.paramtype(__mode__)
@@ -112,7 +117,7 @@ Turing.@model function turing_regression_poisson(X, y)
     k = size(X, 2)
     beta ~ Distributions.MvNormal(zeros(T, k), LinearAlgebra.I)
     eta = X * beta
-    y ~ Turing.arraydist(Distributions.Poisson.(exp.(eta)))
+    y ~ Turing.arraydist(Turing.LogPoisson.(eta))
 end
 
 Turing.@model function turing_regression_bernoulli_logit(X, y)
@@ -164,9 +169,33 @@ function backend_specs()
     return d
 end
 
-function median_gradient_time_ns(ldf, θ; samples::Int=BENCH_SAMPLES, evals::Int=BENCH_EVALS)
+# The machine and package versions the timings were taken under, written into
+# sweep.json and printed with the README table. A ratio with no versions next
+# to it cannot be checked later: a new Mooncake or DynamicPPL release can move
+# these numbers by more than any change on the PracticalBayes side.
+const VERSIONED_PACKAGES = ("PracticalBayes", "Turing", "DynamicPPL", "ForwardDiff",
+                            "Mooncake", "Enzyme", "Piste", "AdvancedHMC",
+                            "Distributions", "BenchmarkTools")
+
+function environment_info()
+    versions = Dict{String,String}()
+    for (_, info) in Pkg.dependencies()
+        info.name in VERSIONED_PACKAGES || continue
+        versions[info.name] = info.version === nothing ? "unknown" : string(info.version)
+    end
+    return Dict(
+        "julia" => string(VERSION),
+        "cpu" => strip(Sys.cpu_info()[1].model),
+        "host" => gethostname(),
+        "threads" => Threads.nthreads(),
+        "blas_threads" => LinearAlgebra.BLAS.get_num_threads(),
+        "packages" => versions,
+    )
+end
+
+function median_gradient_time_ns(ldf, θ; samples::Int=BENCH_SAMPLES, seconds::Float64=BENCH_SECONDS)
     LogDensityProblems.logdensity_and_gradient(ldf, θ)
-    trial = BenchmarkTools.@benchmark LogDensityProblems.logdensity_and_gradient($ldf, $θ) samples=samples evals=evals
+    trial = BenchmarkTools.@benchmark LogDensityProblems.logdensity_and_gradient($ldf, $θ) samples=samples seconds=seconds
     return Float64(BenchmarkTools.median(trial).time)
 end
 
@@ -344,16 +373,16 @@ function main()
                     gm_ldf = PracticalBayes.LogDensityFunction(pb_model, pb_layout, pb_store0,
                                  PracticalBayes.GradMode(); θ0=pb_θ0)
                     LogDensityProblems.logdensity_and_gradient(gm_ldf, pb_θ0)
-                    trial = BenchmarkTools.@benchmark LogDensityProblems.logdensity_and_gradient($gm_ldf, $pb_θ0) samples=BENCH_SAMPLES evals=BENCH_EVALS
+                    trial = BenchmarkTools.@benchmark LogDensityProblems.logdensity_and_gradient($gm_ldf, $pb_θ0) samples=BENCH_SAMPLES seconds=BENCH_SECONDS
                 elseif bname === :piste_fwd
                     chunk = Main.Piste.pickchunk(K)
                     ws = Main.Piste.GradientWorkspace(pb_θ0, chunk)
                     Main.Piste.gradient!(g, obj, pb_θ0, chunk, ws)
-                    trial = BenchmarkTools.@benchmark Main.Piste.gradient!($g, $obj, $pb_θ0, $chunk, $ws) samples=BENCH_SAMPLES evals=BENCH_EVALS
+                    trial = BenchmarkTools.@benchmark Main.Piste.gradient!($g, $obj, $pb_θ0, $chunk, $ws) samples=BENCH_SAMPLES seconds=BENCH_SECONDS
                 else
                     ws = Main.Piste.ReverseWorkspace(K)
                     Main.Piste.rev_gradient!(g, obj, pb_θ0, ws)
-                    trial = BenchmarkTools.@benchmark Main.Piste.rev_gradient!($g, $obj, $pb_θ0, $ws) samples=BENCH_SAMPLES evals=BENCH_EVALS
+                    trial = BenchmarkTools.@benchmark Main.Piste.rev_gradient!($g, $obj, $pb_θ0, $ws) samples=BENCH_SAMPLES seconds=BENCH_SECONDS
                 end
                 pb_ns = Float64(BenchmarkTools.median(trial).time)
                 println("  $(bname): PB=$(round(pb_ns/1e6; digits=3)) ms (PB-only; Turing cannot use it)")
@@ -362,6 +391,9 @@ function main()
             end
             cell[bname] = (pb_ns, Inf)
         end
+        # stdout is block-buffered when Slurm sends it to a file, so without
+        # this the log stays empty until the whole sweep exits.
+        flush(stdout)
     end
 
     figdir = joinpath(@__DIR__, "figures")
@@ -394,7 +426,7 @@ function main()
     end
 
     # JSON has no Inf/NaN representation, but failed-backend cells (e.g.
-    # Mooncake on some Float32+bernoulli_logit combos, see devlog) legitimately
+    # Mooncake on some Float32+bernoulli_logit combos) legitimately
     # produce them (Inf sentinel from the catch-block below; NaN from
     # fastest_ratio_matrix when no backend succeeded for a cell) — JSON3.write
     # errors on these by default, so map non-finite Float64s to `nothing`
@@ -437,7 +469,9 @@ function main()
             "likelihoods" => String.(likelihoods),
             "precisions" => string.(precisions),
             "bench_samples" => BENCH_SAMPLES,
-            "bench_evals" => BENCH_EVALS,
+            "bench_seconds" => BENCH_SECONDS,
+            "bench_evals" => "tuned",
+            "environment" => environment_info(),
         ),
         "rows" => rows,
     )
