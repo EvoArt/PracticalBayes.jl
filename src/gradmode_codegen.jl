@@ -130,32 +130,159 @@ step, so per-call allocation would show up immediately).
 struct GradModeWorkspace{T}
     eta::Vector{T}
     w::Vector{T}
+    # Site name => constrained value, refilled on every call. Kept here rather
+    # than built per call: a fresh Dict cost an allocation and a rehash per
+    # gradient, which is a visible share of a small model's ~1 us budget.
+    vals::Dict{Symbol,Any}
 end
-GradModeWorkspace{T}(N::Int) where {T} = GradModeWorkspace{T}(zeros(T, N), zeros(T, N))
+GradModeWorkspace{T}(N::Int) where {T} =
+    GradModeWorkspace{T}(zeros(T, N), zeros(T, N), Dict{Symbol,Any}())
+
+# --- per-model cache --------------------------------------------------------
+#
+# Everything about a prior site that does not depend on theta, worked out ONCE
+# when the LogDensityFunction is built instead of on every gradient.
+#
+# Measured on a 50x2 normal regression (Athena, 2026-11-04): a GradMode
+# gradient took 3.9 us against 0.9 us for ForwardDiff and 0.29 us for the plain
+# log density. The arithmetic was ~0.15 us of that. The rest was per-call
+# lookup that never changes between calls: a scan of `layout.meta` for each
+# site's distribution (twice per site), the generic Bijectors call on that
+# untyped distribution (~1.4 us for two sites, dynamically dispatched), a
+# `try minimum/maximum` support check, and a walk of the prior's AST for its
+# numeric constants.
+const GM_GENERIC    = Int8(0)   # anything else: the generic Bijectors path
+const GM_ID_SCALAR  = Int8(1)   # scalar, support (-Inf, Inf): x = z
+const GM_EXP_SCALAR = Int8(2)   # scalar, support [0, Inf):    x = exp(z), logjac = z
+const GM_ID_VECTOR  = Int8(3)   # MvNormal-family vector:      x = z
+
+struct GMPrior
+    range::UnitRange{Int}
+    # The Layout's recorded distribution and its linked->constrained bijector,
+    # kept for the GM_GENERIC path (and for `kind` to be checked against).
+    dist::Any
+    bij::Any
+    kind::Int8
+    positive::Bool
+    # The prior's numeric constants, read off the AST once:
+    #   Normal (mu, sd)   Cauchy (mu, scale)   Exponential (theta, -)
+    #   MvNormal (c, -) for c*I   Flat/FlatPos and hierarchical sites: unused
+    c1::Float64
+    c2::Float64
+end
+
+struct GradModeCache
+    priors::Vector{GMPrior}     # parallel to `plan.priors`
+    scale_index::Int            # theta index of the observation scale; 0 if none
+end
 
 """
-    GradModePrep(plan, ws)
+    gradmode_cache(plan, layout) -> GradModeCache
+
+The theta-independent part of every prior site in `plan`, for
+`gradmode_value_and_gradient!`.
+
+Each site's transform is classified from the Layout's own distribution
+(identity, `exp`, or neither) and the classification is CHECKED: the fast
+transform is evaluated against the generic Bijectors one at a test point, and a
+site where the two disagree falls back to the generic path. A mismatch there
+would be a silently wrong posterior, so it is verified rather than assumed.
+"""
+function gradmode_cache(plan::GLMPlan, layout)
+    priors = GMPrior[]
+    for ps in plan.priors
+        slot = getproperty(layout.slots, ps.name)
+        slot isa FlatSlot || error("gradmode: expected FlatSlot for $(ps.name)")
+        r = slot.range
+        d = _gm_exemplar(ps, layout)
+        bij = from_linked_vec(d)
+        kind = _gm_check_kind(_gm_classify(d, r), bij, r)
+        c1, c2 = _gm_is_hier(ps) ? (NaN, NaN) : _gm_prior_constants(ps)
+        push!(priors, GMPrior(r, d, bij, kind, _gm_positive_support(d), c1, c2))
+    end
+    scale_index = 0
+    if plan.link in (:Normal, :MvNormal) && plan.scale !== nothing
+        scale_index = first(getproperty(layout.slots, plan.scale).range)
+    end
+    return GradModeCache(priors, scale_index)
+end
+
+function _gm_classify(d, r)
+    if d isa Distributions.UnivariateDistribution && length(r) == 1
+        lo, hi = try
+            (minimum(d), maximum(d))
+        catch
+            return GM_GENERIC
+        end
+        (lo == -Inf && hi == Inf) && return GM_ID_SCALAR
+        (lo == 0 && hi == Inf) && return GM_EXP_SCALAR
+    elseif d isa Distributions.AbstractMvNormal && length(d) == length(r)
+        return GM_ID_VECTOR
+    end
+    return GM_GENERIC
+end
+
+# Evaluate the fast transform against the generic one at an arbitrary point;
+# keep the fast one only if they agree to rounding.
+function _gm_check_kind(kind, bij, r)
+    kind === GM_GENERIC && return kind
+    theta = [0.37 * sin(1.3i) - 0.21 for i in 1:last(r)]
+    xg, lg = with_logabsdet_jacobian(bij, _linked_view(theta, r))
+    xf, lf = _gm_fast_read(kind, r, theta)
+    ok = size(xf) == size(xg) &&
+         isapprox(vec(collect(xf)), vec(collect(xg)); rtol=1e-12, atol=1e-14) &&
+         isapprox(lf, lg; rtol=1e-12, atol=1e-14)
+    return ok ? kind : GM_GENERIC
+end
+
+@inline function _gm_fast_read(kind, r, theta)
+    if kind === GM_ID_SCALAR
+        x = theta[first(r)]
+        return x, zero(x)
+    elseif kind === GM_EXP_SCALAR
+        z = theta[first(r)]
+        return exp(z), z
+    else # GM_ID_VECTOR
+        return _linked_view(theta, r), zero(eltype(theta))
+    end
+end
+
+function _gm_prior_constants(ps::PriorSite)
+    d = ps.dist
+    d === :Normal && return (_gm_num(ps.args, 1, 0.0), _gm_num(ps.args, 2, 1.0))
+    d === :Cauchy && return (_gm_num(ps.args, 1, 0.0), _gm_num(ps.args, 2, 1.0))
+    d === :Exponential && return (_gm_num(ps.args, 1, 1.0), NaN)
+    d === :MvNormal && return (_gm_mvnormal_var_of(ps), NaN)
+    return (NaN, NaN)   # Flat / FlatPos: no constants
+end
+
+"""
+    GradModePrep(plan, ws, cache)
 
 What `LogDensityFunction` stores in its `prep` slot for a `GradMode()` backend,
-in place of a `DifferentiationInterface` tape/config. Holds the recognized plan
-and the reusable scratch buffers, so the hot path allocates only the returned
-gradient vector.
+in place of a `DifferentiationInterface` tape/config. Holds the recognized plan,
+the reusable scratch buffers and the per-model [`gradmode_cache`](@ref), so the
+hot path allocates only the returned gradient vector.
 """
 struct GradModePrep{P<:GLMPlan,W}
     plan::P
     ws::W
+    cache::GradModeCache
 end
 
 """
-    gradmode_value_and_gradient!(plan, layout, args, theta, g, ws) -> value
+    gradmode_value_and_gradient!(plan, layout, args, theta, g, ws[, cache]) -> value
 
 Closed-form log-joint and gradient for a recognized GLM. Writes the gradient
 into `g` (which must be `length(theta)`) and returns the log-joint.
 
 `args` is the model's argument NamedTuple (`Model.args`), from which data
-operands are looked up by the names the recognizer recorded.
+operands are looked up by the names the recognizer recorded. `cache` is
+[`gradmode_cache`](@ref)`(plan, layout)`; pass it when calling repeatedly, since
+building it is most of what a small model's gradient used to cost.
 """
-function gradmode_value_and_gradient!(plan::GLMPlan, layout, args, theta, g, ws)
+function gradmode_value_and_gradient!(plan::GLMPlan, layout, args, theta, g, ws,
+                                      cache::GradModeCache=gradmode_cache(plan, layout))
     T = eltype(theta)
     fill!(g, zero(T))
 
@@ -202,12 +329,14 @@ function gradmode_value_and_gradient!(plan::GLMPlan, layout, args, theta, g, ws)
     # costs ~5ms compile time per site record; this has no such tradeoff and is
     # strictly better for every model, so it should be unconditional or not at
     # all.
-    vals = Dict{Symbol,Any}()
+    vals = ws.vals
+    empty!(vals)
     lp = zero(T)
-    for ps in plan.priors
-        v, ljac = _gm_read_param(ps, layout, theta)
+    for (k, ps) in enumerate(plan.priors)
+        pc = cache.priors[k]
+        v, ljac = _gm_read_param(pc, theta)
         vals[ps.name] = v
-        lp += (_gm_is_hier(ps) ? _gm_hier_logpdf(ps, v, vals) : _gm_prior_logpdf(ps, v)) + ljac
+        lp += (_gm_is_hier(ps) ? _gm_hier_logpdf(ps, v, vals) : _gm_prior_logpdf(ps, pc, v)) + ljac
     end
 
     # --- 2. forward: eta ----------------------------------------------------
@@ -229,16 +358,18 @@ function gradmode_value_and_gradient!(plan::GLMPlan, layout, args, theta, g, ws)
     end
 
     # --- 5. prior gradient contributions ------------------------------------
-    for ps in plan.priors
+    for (k, ps) in enumerate(plan.priors)
         if _gm_is_hier(ps)
             _gm_hier_grad!(g, ps, vals[ps.name], vals, layout)
         else
-            _gm_prior_grad!(g, ps, vals[ps.name], layout, theta)
+            _gm_prior_grad!(g, ps, cache.priors[k], vals[ps.name])
         end
     end
 
     # the observation scale (sigma) gets its own likelihood-side derivative
-    _gm_scale_grad!(g, plan, vals, eta, y, layout, theta)
+    if cache.scale_index != 0
+        _gm_scale_grad!(g, cache.scale_index, vals[plan.scale], eta, y)
+    end
     return lp
 end
 
@@ -247,11 +378,14 @@ end
 # Reads one prior's parameter out of theta via its Layout slot, using the same
 # bijector path as `_assume(::FlatSlot, ...)` in tilde.jl so constrained
 # parameters and their log-Jacobians behave identically.
-function _gm_read_param(ps::PriorSite, layout, theta)
-    slot = getproperty(layout.slots, ps.name)
-    slot isa FlatSlot || error("gradmode: expected FlatSlot for $(ps.name)")
-    d = _gm_exemplar(ps, layout)
-    x, ljac = with_logabsdet_jacobian(from_linked_vec(d), _linked_view(theta, slot.range))
+#
+# The two common transforms (identity, and `exp` onto [0, Inf)) are done
+# directly; `gradmode_cache` has already checked them against Bijectors for
+# this site. They also keep theta's element type by construction, so the width
+# fix below is only needed on the generic path.
+function _gm_read_param(pc::GMPrior, theta)
+    pc.kind === GM_GENERIC || return _gm_fast_read(pc.kind, pc.range, theta)
+    x, ljac = with_logabsdet_jacobian(pc.bij, _linked_view(theta, pc.range))
     # The exemplar is recorded ONCE by TraceMode and carries the element type of
     # the distribution as written (`Exponential(1)` is Float64), so Bijectors
     # returns a Float64 `x` even when `theta` is Float32 — and everything
@@ -310,8 +444,8 @@ end
 # the literal is Float64 and would promote the sum it lands in.
 @inline _gm_log2pi(::Type{T}) where {T} = log(_gm_c(T, 2) * _gm_c(T, pi))
 
-_gm_prior_logpdf(ps::PriorSite, v) =
-    _gm_flatlike(ps.dist) ? zero(_gm_T(v)) : logpdf_of(ps, v)
+_gm_prior_logpdf(ps::PriorSite, pc::GMPrior, v) =
+    _gm_flatlike(ps.dist) ? zero(_gm_T(v)) : logpdf_of(ps, pc, v)
 
 # Flat/FlatPos are constant on their support AND need no bounded transform, so
 # they contribute nothing that varies with theta.
@@ -322,7 +456,9 @@ _gm_prior_logpdf(ps::PriorSite, v) =
 # It is now rejected by the recognizer instead (see GRADMODE_PRIORS).
 _gm_flatlike(d::Symbol) = d in (:Flat, :FlatPos)
 
-function logpdf_of(ps::PriorSite, v)
+# The constants come from `pc` (`gradmode_cache`), read off the AST once rather
+# than re-walked here on every call.
+function logpdf_of(ps::PriorSite, pc::GMPrior, v)
     d = ps.dist
     # hierarchical (centered): location and/or scale come from `vals`, not the
     # AST, so this is handled by `_gm_hier_logpdf` with the resolved numbers.
@@ -330,61 +466,74 @@ function logpdf_of(ps::PriorSite, v)
     T = _gm_T(v)
     half = _gm_c(T, 0.5)
     if d === :Normal
-        mu, sd = _gm_c(T, _gm_num(ps.args, 1, 0.0)), _gm_c(T, _gm_num(ps.args, 2, 1.0))
+        mu, sd = _gm_c(T, pc.c1), _gm_c(T, pc.c2)
         return sum(@. -half*((v-mu)/sd)^2 - log(sd) - half*_gm_log2pi(T))
     elseif d === :MvNormal
         # isotropic covariance `c*I`; `c` recovered from the AST at
         # recognition time (see _gm_mvnormal_var). Ignoring it silently
         # differentiates a scaled prior as if it were standard normal.
-        c = _gm_c(T, _gm_mvnormal_var_of(ps))
-        return sum(@. -half*v^2/c) - half*_gm_c(T, length(v))*(_gm_log2pi(T) + log(c))
+        c = _gm_c(T, pc.c1)
+        ss = zero(T)
+        @inbounds for x in v; ss += x*x; end
+        return -half*ss/c - half*_gm_c(T, length(v))*(_gm_log2pi(T) + log(c))
     elseif d === :Exponential
-        th = _gm_c(T, _gm_num(ps.args, 1, 1.0))
+        th = _gm_c(T, pc.c1)
         return sum(@. -v/th - log(th))
     elseif d === :Cauchy
-        mu, sc = _gm_c(T, _gm_num(ps.args, 1, 0.0)), _gm_c(T, _gm_num(ps.args, 2, 1.0))
+        mu, sc = _gm_c(T, pc.c1), _gm_c(T, pc.c2)
         return sum(@. -log(_gm_c(T, pi)*sc*(1 + ((v-mu)/sc)^2)))
     end
     error("gradmode: no closed-form logpdf for $(d)")
 end
 
-# d(logpdf)/dx for each whitelisted prior, written into g at the slot range.
-# The chain through the bijector is handled by `_gm_bij_chain`.
-function _gm_prior_grad!(g, ps::PriorSite, v, layout, theta)
-    # A flat-like prior contributes nothing from its DENSITY -- but if it is
-    # bounded below it is still sampled through a bijector, and that Jacobian's
-    # derivative is a real gradient term.
-    #
-    # This was a bug: returning early here skipped `_gm_add_chained!` entirely,
-    # so `sigma ~ FlatPos(0.0)` lost the `+ 1.0` from `d/dz of z` (the log-
-    # Jacobian of x = exp(z)). Measured on the PosteriorDB blr pattern the
-    # density was right to 9e-13 while sigma's gradient was short by exactly
-    # 1.0 -- correct-looking output, wrong posterior.
-    if _gm_flatlike(ps.dist)
-        _gm_is_positive(ps, layout) &&
-            _gm_add_chained!(g, getproperty(layout.slots, ps.name).range,
-                             zero(v), v, ps, layout)
-        return nothing
-    end
-    slot = getproperty(layout.slots, ps.name)
-    d = ps.dist
-    T = _gm_T(v)
-    dv = if d === :Normal
-        mu, sd = _gm_c(T, _gm_num(ps.args, 1, 0.0)), _gm_c(T, _gm_num(ps.args, 2, 1.0))
-        @. -(v-mu)/sd^2
+# d(logpdf)/dx at one element `x` of a non-hierarchical site, for each
+# whitelisted prior. Flat-like priors contribute nothing from their density.
+@inline function _gm_dlogp(d::Symbol, ::Type{T}, c1, c2, x) where {T}
+    if d === :Normal
+        mu, sd = _gm_c(T, c1), _gm_c(T, c2)
+        return -(x - mu)/sd^2
     elseif d === :MvNormal
-        c = _gm_c(T, _gm_mvnormal_var_of(ps))
-        @. -v/c
+        return -x/_gm_c(T, c1)
     elseif d === :Exponential
-        th = _gm_c(T, _gm_num(ps.args, 1, 1.0))
-        fill(-inv(th), size(v))
+        return -inv(_gm_c(T, c1))
     elseif d === :Cauchy
-        mu, sc = _gm_c(T, _gm_num(ps.args, 1, 0.0)), _gm_c(T, _gm_num(ps.args, 2, 1.0))
-        @. -2*(v-mu)/(sc^2 + (v-mu)^2)
-    else
-        error("gradmode: no closed-form prior gradient for $(d)")
+        mu, sc = _gm_c(T, c1), _gm_c(T, c2)
+        return -2*(x - mu)/(sc^2 + (x - mu)^2)
+    elseif _gm_flatlike(d)
+        return zero(T)
     end
-    _gm_add_chained!(g, slot.range, dv, v, ps, layout)
+    error("gradmode: no closed-form prior gradient for $(d)")
+end
+
+# One element of a site value that may be a scalar or a vector.
+@inline _gm_at(v::AbstractArray, k) = @inbounds v[k]
+@inline _gm_at(v, k) = v
+
+# d(logpdf)/dx for each whitelisted prior, written into g at the slot range,
+# chained through the bijector: for an identity site `g += dx`; for a positive
+# site under x = exp(z), `g += dx * x + 1`, the `+ 1` being the derivative of the
+# log-Jacobian `z`.
+#
+# A flat-like prior has no density term, but a positive one still has the
+# Jacobian's `+ 1`. Skipping it was a real bug: `sigma ~ FlatPos(0.0)` lost
+# exactly 1.0 from its gradient while the density stayed right (PosteriorDB
+# blr pattern) -- correct-looking output, wrong posterior.
+#
+# Element by element, with no temporary array: the broadcast form allocated a
+# vector the size of the site on every call.
+function _gm_prior_grad!(g, ps::PriorSite, pc::GMPrior, v)
+    T = _gm_T(v)
+    d = ps.dist
+    if pc.positive
+        @inbounds for (k, i) in enumerate(pc.range)
+            x = _gm_at(v, k)
+            g[i] += _gm_dlogp(d, T, pc.c1, pc.c2, x) * x + one(T)
+        end
+    else
+        @inbounds for (k, i) in enumerate(pc.range)
+            g[i] += _gm_dlogp(d, T, pc.c1, pc.c2, _gm_at(v, k))
+        end
+    end
     return nothing
 end
 
@@ -750,17 +899,20 @@ end
 # d(loglik)/d(sigma) = sum(r^2)/sigma^3 - N/sigma, chained through the log
 # bijector (sigma is positive, so the linked value is log sigma and
 # d/d(log sigma) = sigma * d/d(sigma)).
-function _gm_scale_grad!(g, plan::GLMPlan, vals, eta, y, layout, theta)
-    (plan.link in (:Normal, :MvNormal) && plan.scale !== nothing) || return nothing
+#
+# `i` is the scale's theta index, from `gradmode_cache`. `sv` arrives untyped out
+# of `vals`; taking it as an argument makes this a function barrier, so the loop
+# below compiles for its concrete type instead of dispatching per operation
+# (it was 0.42 us of a 3.9 us small-model gradient).
+function _gm_scale_grad!(g, i::Int, sv, eta, y)
     T = _gm_T(eta)
-    s = _gm_c(T, _gm_scalar(vals[plan.scale]))
+    s = _gm_c(T, _gm_scalar(sv))
     ss = zero(T)
-    @inbounds @simd for i in eachindex(eta)
-        r = _gm_c(T, y[i]) - eta[i]; ss += r*r
+    @inbounds @simd for k in eachindex(eta)
+        r = _gm_c(T, y[k]) - eta[k]; ss += r*r
     end
     dsigma = ss/(s^3) - _gm_c(T, length(eta))/s
-    slot = getproperty(layout.slots, plan.scale)
-    g[first(slot.range)] += dsigma * s     # chain through exp
+    g[i] += dsigma * s     # chain through exp
     return nothing
 end
 

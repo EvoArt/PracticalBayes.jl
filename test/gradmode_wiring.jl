@@ -224,3 +224,63 @@ end
     @test va ≈ vo
     @test ga ≈ go rtol=1e-8
 end
+
+@testset "gradmode cache: fast transforms are chosen, and agree with AD" begin
+    # `gradmode_cache` works out each prior site's transform once, and reads the
+    # two common ones (identity, and exp onto [0, Inf)) directly instead of
+    # through Bijectors. A wrong classification would be a silently wrong
+    # posterior, so: check WHICH path each site gets, and that the closed form
+    # still matches general AD at several random points, for every prior and
+    # transform kind the fast paths cover.
+    @model function _gm_cache_normal(X, y)
+        pT = paramtype(__mode__); k = size(X, 2)
+        alpha ~ Normal(one(pT), pT(2))
+        beta ~ MvNormal(zeros(pT, k), pT(4) * I)
+        sigma ~ Exponential(pT(2))
+        y ~ MvNormal(alpha .+ X * beta, sigma^2 * I)
+    end
+    @model function _gm_cache_logit(X, y)
+        pT = paramtype(__mode__); k = size(X, 2)
+        alpha ~ Cauchy(zero(pT), pT(2.5))
+        beta ~ MvNormal(zeros(pT, k), I)
+        y ~ arraydist(BernoulliLogit.(alpha .+ X * beta))
+    end
+    @model function _gm_cache_flatpos(X, y)
+        pT = paramtype(__mode__); k = size(X, 2)
+        beta ~ MvNormal(zeros(pT, k), I)
+        sigma ~ FlatPos(zero(pT))
+        y ~ MvNormal(X * beta, sigma^2 * I)
+    end
+    X, yb, yn = _gm_data(N=60, P=3, seed=5)
+    cases = ((_gm_cache_normal(X, yn), (PB.GM_ID_SCALAR, PB.GM_ID_VECTOR, PB.GM_EXP_SCALAR)),
+             (_gm_cache_logit(X, yb), (PB.GM_ID_SCALAR, PB.GM_ID_VECTOR)),
+             (_gm_cache_flatpos(X, yn), (PB.GM_ID_VECTOR, PB.GM_EXP_SCALAR)))
+    for (m, kinds) in cases
+        plan = gradmode_plan(m.f)
+        @test plan !== nothing
+        lay, th, st = build_layout(m; rng=Xoshiro(3))
+        cache = PB.gradmode_cache(plan, lay)
+        @test Tuple(p.kind for p in cache.priors) == kinds
+        ad = LogDensityFunction(m, lay, st, AutoForwardDiff(); θ0=th, closed_form=false)
+        gm = LogDensityFunction(m, lay, st, GradMode(); θ0=th)
+        for s in 1:5
+            θ = th .+ 0.3 .* randn(Xoshiro(100 + s), length(th))
+            va, ga = LogDensityProblems.logdensity_and_gradient(ad, θ)
+            vg, gg = LogDensityProblems.logdensity_and_gradient(gm, θ)
+            @test vg ≈ va rtol=1e-10
+            @test gg ≈ ga rtol=1e-8
+        end
+    end
+
+    # Float32 end to end: the fast paths keep theta's width by construction.
+    m32 = _gm_cache_normal(Float32.(X), Float32.(yn))
+    lay, th, st = build_layout(m32; T=Float32, rng=Xoshiro(3))
+    ad = LogDensityFunction(m32, lay, st, AutoForwardDiff(); θ0=th, closed_form=false)
+    gm = LogDensityFunction(m32, lay, st, GradMode(); θ0=th)
+    va, ga = LogDensityProblems.logdensity_and_gradient(ad, th)
+    vg, gg = LogDensityProblems.logdensity_and_gradient(gm, th)
+    @test vg isa Float32
+    @test eltype(gg) === Float32
+    @test vg ≈ va rtol=1e-4
+    @test gg ≈ ga rtol=1e-3
+end

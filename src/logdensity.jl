@@ -74,7 +74,7 @@ function LogDensityFunction(
             "variables): the closed form is derived for the whole model at once. Use a " *
             "general AD backend for this block."))
         N = length(getfield(model.args, plan.response))
-        prep = GradModePrep(plan, GradModeWorkspace{eltype(θ0)}(N))
+        prep = GradModePrep(plan, GradModeWorkspace{eltype(θ0)}(N), gradmode_cache(plan, layout))
         return LogDensityFunction(model, layout, store, adtype, prep, reject_errors)
     end
     # AUTOMATIC CLOSED FORM. If the model was recognized as GLM-shaped at
@@ -102,7 +102,7 @@ function LogDensityFunction(
     # asked for by naming that backend (seen: the trimming guide had to pass
     # `closed_form=false` to get a GLM-shaped model to trim).
     if closed_form && !(adtype isa GradMode) && !(adtype isa AutoPBForwardDiff)
-        gm = _maybe_gradmode(model, store, θ0)
+        gm = _maybe_gradmode(model, layout, store, θ0)
         if !isempty(gm)
             return LogDensityFunction(model, layout, store, GradMode(), gm[1], reject_errors)
         end
@@ -179,13 +179,13 @@ EvalLayout(layout::Layout) = EvalLayout(layout.slots)
 # recognized at macro-expansion time, `store` must be empty (the closed form is
 # derived for the whole model at once, so a Gibbs block cannot use it), and the
 # response argument must be present.
-function _maybe_gradmode(model, store, θ0)
+function _maybe_gradmode(model, layout, store, θ0)
     isempty(store) || return ()
     plan = gradmode_plan(model.f)
     plan === nothing && return ()
     hasproperty(model.args, plan.response) || return ()
     N = length(getfield(model.args, plan.response))
-    return (GradModePrep(plan, GradModeWorkspace{eltype(θ0)}(N)),)
+    return (GradModePrep(plan, GradModeWorkspace{eltype(θ0)}(N), gradmode_cache(plan, layout)),)
 end
 
 # True once `import Piste` has activated `ext/PracticalBayesPisteExt.jl`.
@@ -299,14 +299,14 @@ function LogDensityProblems.logdensity_and_gradient(
     g = similar(θ)
     if f.reject_errors
         try
-            v = gradmode_value_and_gradient!(f.prep.plan, f.layout, f.model.args, θ, g, f.prep.ws)
+            v = gradmode_value_and_gradient!(f.prep.plan, f.layout, f.model.args, θ, g, f.prep.ws, f.prep.cache)
             return v, g
         catch e
             e isa Union{InterruptException,OutOfMemoryError} && rethrow()
             return _reject_value(θ), zeros(eltype(θ), length(θ))
         end
     end
-    v = gradmode_value_and_gradient!(f.prep.plan, f.layout, f.model.args, θ, g, f.prep.ws)
+    v = gradmode_value_and_gradient!(f.prep.plan, f.layout, f.model.args, θ, g, f.prep.ws, f.prep.cache)
     return v, g
 end
 
