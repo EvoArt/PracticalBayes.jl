@@ -182,19 +182,22 @@ function main()
 
 " *
         "Read the tables together. **Forward mode** costs O(P) by construction: with few " *
-        "parameters it is level with the fastest backend, and with many it falls far " *
-        "behind, which is what the large-P columns show. **Reverse mode** does not grow " *
-        "with P the same way. In `Float64` it is close to the fastest backend on the " *
-        "Poisson and Bernoulli models and ahead of it at large P, but several times " *
-        "slower on the normal model; in `Float32` it is slower throughout.
+        "parameters it is level with the fastest backend on the Poisson and Bernoulli " *
+        "models and a few times slower on the normal one, and with many parameters it " *
+        "falls far behind, which is what the large-P columns show. **Reverse mode** does not grow " *
+        "with P the same way. On the Poisson and Bernoulli models it is within about 2x " *
+        "of the fastest backend everywhere, and ahead of it when there are many " *
+        "observations and many parameters. On the normal model it is slower, most of all " *
+        "with many observations and few parameters.
 
 " *
         "**GradMode** is not AD at all: for a GLM-shaped model PracticalBayes recognises " *
         "the shape and evaluates the analytic gradient directly (`X' * resid`, one BLAS " *
         "call, no tape). On the Poisson and Bernoulli models it is the fastest option " *
-        "almost everywhere. On the normal model it is level with the AD backends from " *
-        "about a thousand observations up, and slower below that, where a gradient takes " *
-        "microseconds and GradMode's fixed cost per call dominates. All three sweep models " *
+        "in every cell. On the normal model it is level with or faster than the AD " *
+        "backends from about a thousand observations up; below that, where a gradient " *
+        "takes a few microseconds, its fixed cost per call can make it up to about 2x " *
+        "slower. All three sweep models " *
         "are GLM-shaped, so it applies to every cell; a model outside the recognised " *
         "grammar falls back to ordinary AD and gets none of this.
 

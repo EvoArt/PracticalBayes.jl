@@ -182,7 +182,13 @@ function environment_info()
     versions = Dict{String,String}()
     for (_, info) in Pkg.dependencies()
         info.name in VERSIONED_PACKAGES || continue
-        versions[info.name] = info.version === nothing ? "unknown" : string(info.version)
+        v = info.version === nothing ? "unknown" : string(info.version)
+        # A package installed from a git commit keeps its last release's version
+        # number, which would claim the release was measured. Add the commit.
+        if info.is_tracking_repo && info.git_revision !== nothing
+            v *= " (" * first(info.git_revision, 7) * ")"
+        end
+        versions[info.name] = v
     end
     return Dict(
         "julia" => string(VERSION),
