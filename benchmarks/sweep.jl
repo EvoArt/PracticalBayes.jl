@@ -55,9 +55,10 @@ const HAS_PISTE = try_import(:Piste)
 const ENZYME_MODE = HAS_ENZYME ? Main.Enzyme.set_runtime_activity(Main.Enzyme.Reverse) : nothing
 
 # Piste is PracticalBayes' own AD, and the only backend here that survives
-# `juliac --trim`. Turing cannot use it, so its cells are PB-only: the Turing
-# side is recorded as Inf and the README presents these against PB's own
-# fastest Turing-comparable backend rather than as a PB/Turing ratio.
+# `juliac --trim`. It has no DifferentiationInterface backend yet, which is how
+# Turing selects AD, so it is timed on the PB model only: the Turing side is
+# recorded as Inf and the README compares it with PB's fastest other backend
+# rather than forming a PB/Turing ratio.
 const PISTE_BACKENDS = (:piste_fwd, :piste_rev)
 
 # GradMode is PB-only like Piste, but it is not AD at all: for a recognised GLM
@@ -385,7 +386,7 @@ function main()
                     trial = BenchmarkTools.@benchmark Main.Piste.rev_gradient!($g, $obj, $pb_θ0, $ws) samples=BENCH_SAMPLES seconds=BENCH_SECONDS
                 end
                 pb_ns = Float64(BenchmarkTools.median(trial).time)
-                println("  $(bname): PB=$(round(pb_ns/1e6; digits=3)) ms (PB-only; Turing cannot use it)")
+                println("  $(bname): PB=$(round(pb_ns/1e6; digits=3)) ms (PB model only; compared with the other backends)")
             catch e
                 println("  $(bname): FAILED — ", sprint(showerror, e)[1:min(end, 220)])
             end

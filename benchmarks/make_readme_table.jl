@@ -47,8 +47,8 @@ function backend_ratios(row, backend::String)
     return ratio(pb_ns, tu_ns)
 end
 
-# Piste has no Turing counterpart (Turing cannot use it), so a PB/Turing ratio
-# is meaningless. What IS meaningful is how it compares to the fastest backend
+# Piste has no DifferentiationInterface backend yet, so there is no Turing
+# column for it, and a PB/Turing ratio would be meaningless. What IS meaningful is how it compares to the fastest backend
 # PracticalBayes could otherwise use on the same model -- which is also the
 # question a user picking a backend actually has.
 function make_piste_table(lookup, backend::String, nvals::Vector{Int}, kvals::Vector{Int},
@@ -175,9 +175,10 @@ function main()
 " *
         "[Piste](https://github.com/EvoArt/Piste.jl) is the only backend here that survives " *
         "`juliac --trim`, i.e. the only one that lets a model compile to a standalone " *
-        "binary. Turing cannot use it, so there is no PB/Turing ratio to give; these ratios " *
-        "are instead `Piste / fastest of ForwardDiff, Mooncake, Enzyme` on the same cell, " *
-        "with `< 1` meaning Piste is faster.
+        "binary. It is not yet available through DifferentiationInterface, which is how " *
+        "Turing selects an AD backend, so the comparison here is between backends rather " *
+        "than between packages: `Piste / fastest of ForwardDiff, Mooncake, Enzyme` on the " *
+        "same PracticalBayes model, with `< 1` meaning Piste is faster.
 
 " *
         "Read the tables together. **Forward mode** costs O(P) by construction: with few " *

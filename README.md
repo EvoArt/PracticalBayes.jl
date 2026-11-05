@@ -91,7 +91,7 @@ Measured with Julia 1.12.7 on one Julia thread and 1 BLAS thread of an exclusive
 
 ### Piste (PracticalBayes' own AD)
 
-[Piste](https://github.com/EvoArt/Piste.jl) is the only backend here that survives `juliac --trim`, i.e. the only one that lets a model compile to a standalone binary. Turing cannot use it, so there is no PB/Turing ratio to give; these ratios are instead `Piste / fastest of ForwardDiff, Mooncake, Enzyme` on the same cell, with `< 1` meaning Piste is faster.
+[Piste](https://github.com/EvoArt/Piste.jl) is the only backend here that survives `juliac --trim`, i.e. the only one that lets a model compile to a standalone binary. It is not yet available through DifferentiationInterface, which is how Turing selects an AD backend, so the comparison here is between backends rather than between packages: `Piste / fastest of ForwardDiff, Mooncake, Enzyme` on the same PracticalBayes model, with `< 1` meaning Piste is faster.
 
 Read the tables together. **Forward mode** costs O(P) by construction: with few parameters it is level with the fastest backend, and with many it falls far behind, which is what the large-P columns show. **Reverse mode** does not grow with P the same way. In `Float64` it is close to the fastest backend on the Poisson and Bernoulli models and ahead of it at large P, but several times slower on the normal model; in `Float32` it is slower throughout.
 
