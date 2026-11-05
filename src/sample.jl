@@ -2,6 +2,80 @@ using AbstractMCMC: AbstractMCMC
 using AdvancedHMC: AdvancedHMC
 using FlexiChains: FlexiChains, SymChain
 
+# --- starting point ---------------------------------------------------------
+#
+# A chain started where the log density is -Inf never moves: the gradient there
+# is NaN, every leapfrog step diverges, and every draw is the starting point.
+# Nothing errors, so the result is a confident, wrong posterior with zero spread.
+#
+# This happened, and was hard to spot: a Bernoulli model with a probit or
+# cloglog link, a Normal(0, 2) slope and data with no signal. A prior draw of
+# the slope near 3 pushes the linear predictor far enough that `cdf(Normal(),
+# eta)` or `1 - exp(-exp(eta))` rounds to exactly 0 or 1, and one observation on
+# the wrong side makes the whole log density -Inf. Two of eight seeds gave
+# posteriors 30-95 posterior sd from the truth while Turing matched brms.
+#
+# The starting point is therefore Stan's and Turing's: every parameter not given
+# in `init` is drawn from Uniform(-2, 2) in UNCONSTRAINED space, and drawn again
+# until the log density, and for a gradient sampler its gradient, is finite.
+#
+# It used to be a single draw from the prior. That is what put the chain above
+# at -Inf, and even when the result is finite a weak or heavy-tailed prior
+# (`Normal(0, 10)`, `2.5 * TDist(3)`, `Flat()`) starts the chain far out in a
+# tail, which warm-up then has to walk back from. Uniform(-2, 2) keeps every
+# unconstrained coordinate near the origin: a positive parameter starts within
+# exp(+-2) = 0.14..7.4. A model on a very different scale should pass `init`.
+const _MAX_START_DRAWS = 100
+
+# θ indices a starting point draws freely: every flat slot not named in `init`.
+function _free_indices(layout, init)
+    idx = Int[]
+    for (name, slot) in pairs(layout.slots)
+        haskey(init, name) && continue
+        r = _slot_range(slot)
+        r === nothing || append!(idx, r)
+    end
+    return idx
+end
+_slot_range(s::FlatSlot) = s.range
+_slot_range(s::FlatArraySlot) = (s.offset + 1):(s.offset + s.elsize * prod(s.dims))
+_slot_range(s) = nothing     # a ValueSlot lives in the value store, not in θ
+
+# `θ0` is `build_layout`'s θ: it supplies the `init` coordinates, which are kept.
+function _initial_point(rng, ldf, layout, θ0, init; gradient::Bool)
+    free = _free_indices(layout, init)
+    θ = copy(θ0)
+    T = eltype(θ)
+    for _ in 1:_MAX_START_DRAWS
+        for i in free
+            θ[i] = 4 * rand(rng, T) - 2
+        end
+        _finite_at(ldf, θ, gradient) && return θ
+        # Everything fixed by `init`: a redraw cannot change anything.
+        isempty(free) && break
+    end
+    what = gradient ? "log density or gradient" : "log density"
+    throw(ArgumentError(
+        "could not find a starting point with a finite $what in " *
+        "$(_MAX_START_DRAWS) draws from Uniform(-2, 2) in unconstrained space" *
+        (isempty(free) ? " (every parameter is fixed by `init`)" : "") * ". " *
+        "Pass a starting point with `init = (name = value, ...)`; a value at which " *
+        "the model's likelihood is not zero will do."))
+end
+
+function _finite_at(ldf, θ, gradient::Bool)
+    try
+        if gradient
+            v, g = LogDensityProblems.logdensity_and_gradient(ldf, θ)
+            return isfinite(v) && all(isfinite, g)
+        end
+        return isfinite(LogDensityProblems.logdensity(ldf, θ))
+    catch e
+        e isa InterruptException && rethrow()
+        return false
+    end
+end
+
 """
     SymChain
 
@@ -27,7 +101,10 @@ Draw `N` samples from the posterior of `model` with an HMC sampler such as
   defaults to `n_adapts`, so the chain holds `N` draws after warm-up. Pass
   `discard_initial=0` to keep the warm-up.
 - `thinning`: keep every `thinning`-th iteration.
-- `init`: starting values by name; others are drawn from the prior.
+- `init`: starting values by name, in the constrained space. Every other
+  parameter starts at a draw from Uniform(-2, 2) in unconstrained space, redrawn
+  until the log density and its gradient are finite (as in Stan and Turing).
+  Pass `init` for a model whose parameters are far from that range.
 - `adtype`: AD backend for the gradient, e.g. `AutoMooncake()`.
 - `progress`: show a progress meter; defaults to [`default_progress`](@ref).
 - `chain_type=nothing`: return AdvancedHMC's raw transitions instead.
@@ -65,11 +142,12 @@ function AbstractMCMC.sample(
     # prepared θ and the sampled θ identical; for the usual `NUTS(0.8)` this is
     # Float64, i.e. exactly what was built before.
     T = AdvancedHMC.sampler_eltype(spl)
-    # `rng=rng`: the starting point is drawn from the prior, and it must come
+    # `rng=rng`: the starting point is drawn at random, and it must come
     # from the caller's RNG or `sample(StableRNG(1), ...)` is not reproducible
     # (it used the global RNG until 2026-11-01).
     layout, θ0, store0 = build_layout(model; init=init, T=T, rng=rng)
     ldf = LogDensityFunction(model, layout, store0, adtype; θ0=θ0)
+    θ0 = _initial_point(rng, ldf, layout, θ0, init; gradient=true)
     ldm = AbstractMCMC.LogDensityModel(ldf)
 
     # `n_adapts` travels on to every `step` call through `kwargs`; see
@@ -109,6 +187,9 @@ The sampler works on the unconstrained parameter vector, with a gradient from
 `adtype` for samplers that use one. `discard_initial` and `thinning` have their
 AbstractMCMC meanings; nothing is discarded by default. Every parameter must be
 continuous; for discrete ones use [`Gibbs`](@ref) with a Gibbs kernel.
+
+Parameters not given in `init` start at a draw from Uniform(-2, 2) in
+unconstrained space, redrawn until the log density is finite.
 """
 function AbstractMCMC.sample(
     rng::Random.AbstractRNG,
@@ -123,6 +204,9 @@ function AbstractMCMC.sample(
 )
     layout, θ0, store0 = build_layout(model; init=init, rng=rng)
     ldf = LogDensityFunction(model, layout, store0, adtype; θ0=θ0)
+    # Only the log density is checked here: a gradient-free sampler does not
+    # need the gradient to be finite, or even to exist.
+    θ0 = _initial_point(rng, ldf, layout, θ0, init; gradient=false)
     ldm = AbstractMCMC.LogDensityModel(ldf)
 
     if chain_type === nothing

@@ -6,7 +6,7 @@
 # already covers — this is specifically about the FlexiChains.SymChain
 # bundling path.
 
-using Distributions: Normal, Exponential
+using Distributions: Distributions, Normal, Exponential
 # `NUTS` is PracticalBayes' own export (src/nuts.jl), not AdvancedHMC's type.
 using StableRNGs: StableRNG
 import AbstractMCMC
@@ -305,4 +305,47 @@ end
                               chain_type=nothing, progress=true)
     @test length(raw) == 40
     @test !any(get(t.stat, :is_adapt, false) for t in raw)   # warm-up discarded, as on the chain path
+end
+
+@testset "sample: a starting point with a non-finite log density is redrawn" begin
+    # A chain started where the log density is -Inf never moves: the gradient
+    # is NaN there, every step diverges, and every draw is the start. Here any
+    # x > 0 gives the observation y = 0 probability zero, so half of all draws
+    # from Uniform(-2, 2) are such a start: with 12 seeds, some first draw is
+    # bad except with probability 2^-12.
+    @model function _start_model(y)
+        x_s ~ Normal(0, 1)
+        y ~ Distributions.Bernoulli(x_s > 0 ? 1.0 : 0.5)
+    end
+    m = _start_model(0)
+    for s in 1:12
+        chn = sample(StableRNG(s), m, NUTS(), 200; progress=false)
+        xs = vec(collect(chn[:x_s]))
+        @test all(<(0), xs)                 # never stuck at a start in x > 0
+        @test length(unique(xs)) > 10       # and actually moving
+    end
+    # A start fixed by `init` that cannot be fixed by redrawing is an error,
+    # not a silent stuck chain.
+    @test_throws ArgumentError sample(StableRNG(1), m, NUTS(), 50; progress=false,
+                                      init=(x_s=1.0,))
+end
+
+@testset "sample: the start is Uniform(-2, 2) in unconstrained space, init kept" begin
+    # Stan's and Turing's rule. A prior draw would put `a` near 1000 and could
+    # put `b` anywhere in its tail; this keeps both near the origin of the
+    # unconstrained space, and leaves a parameter given in `init` exactly as given.
+    @model function _uniform_start_model()
+        a_u ~ Normal(1000, 1)
+        b_u ~ Exponential(1)
+    end
+    m = _uniform_start_model()
+    lay, th0, st = build_layout(m; rng=StableRNG(4))
+    ldf = LogDensityFunction(m, lay, st, AutoForwardDiff(); θ0=th0)
+    θ = PracticalBayes._initial_point(StableRNG(5), ldf, lay, th0, NamedTuple(); gradient=true)
+    @test all(x -> -2 <= x <= 2, θ)
+    lay, th0, st = build_layout(m; init=(a_u=1000.0,), rng=StableRNG(4))
+    ldf = LogDensityFunction(m, lay, st, AutoForwardDiff(); θ0=th0)
+    θ = PracticalBayes._initial_point(StableRNG(5), ldf, lay, th0, (a_u=1000.0,); gradient=true)
+    @test θ[1] == 1000.0
+    @test -2 <= θ[2] <= 2
 end
