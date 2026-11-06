@@ -185,17 +185,19 @@ function main()
         "parameters it is level with the fastest backend on the Poisson and Bernoulli " *
         "models and a few times slower on the normal one, and with many parameters it " *
         "falls far behind, which is what the large-P columns show. **Reverse mode** does not grow " *
-        "with P the same way. On the Poisson and Bernoulli models it is within about 2x " *
+        "with P the same way. On the Poisson and Bernoulli models it is within about 1.8x " *
         "of the fastest backend everywhere, and ahead of it when there are many " *
-        "observations and many parameters. On the normal model it is slower, most of all " *
-        "with many observations and few parameters.
+        "parameters: with many observations at both precisions, and with few observations " *
+        "in `Float64`. On the normal model it is slower, about 1.3-3x in `Float64` and up to " *
+        "7x in `Float32`, most of all with many observations and few parameters.
 
 " *
         "**GradMode** is not AD at all: for a GLM-shaped model PracticalBayes recognises " *
         "the shape and evaluates the analytic gradient directly (`X' * resid`, one BLAS " *
         "call, no tape). On the Poisson and Bernoulli models it is the fastest option " *
         "in every cell. On the normal model it is level with or faster than the AD " *
-        "backends from about a thousand observations up; below that, where a gradient " *
+        "backends from about a thousand observations up (in this run the single largest " *
+        "`Float64` cell came out 1.2x slower); below that, where a gradient " *
         "takes a few microseconds, its fixed cost per call can make it up to about 2x " *
         "slower. All three sweep models " *
         "are GLM-shaped, so it applies to every cell; a model outside the recognised " *
