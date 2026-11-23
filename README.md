@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/EvoArt/PracticalBayes.jl/actions/workflows/ci.yml/badge.svg)](https://github.com/EvoArt/PracticalBayes.jl/actions/workflows/ci.yml)
 [![Docs](https://img.shields.io/badge/docs-stable-blue.svg)](https://evoart.github.io/PracticalBayes.jl/)
+[![Coverage](https://codecov.io/gh/EvoArt/PracticalBayes.jl/branch/master/graph/badge.svg)](https://codecov.io/gh/EvoArt/PracticalBayes.jl)
 
 PracticalBayes is a probabilistic programming package for Julia, and a work in
 progress. It is built largely from the building blocks of the Turing ecosystem,
