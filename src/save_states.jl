@@ -32,10 +32,18 @@
 
 abstract type SaveDisposition end
 
-"Keep the variable's draws in the chain: `:chain` in `save_states`, the default."
+"""
+    SaveToChain()
+
+Keep the variable's draws in the chain (`:chain` in `save_states`; the default).
+"""
 struct SaveToChain <: SaveDisposition end
 
-"Leave the variable's draws out of the chain and write them nowhere: `:buffer` in `save_states`."
+"""
+    SaveToBuffer()
+
+Drop the variable's draws from the chain and write them nowhere (`:buffer` in `save_states`).
+"""
 struct SaveToBuffer <: SaveDisposition end
 
 """
